@@ -87,7 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(client);
 
   // 2) Commands
-  context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateCurrentExpression", evaluateCurrentExpression));
+  context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateExpression", evaluateCurrentExpression));
   context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateOutermostExpression", evaluateOutermostExpression));
   context.subscriptions.push(vscode.commands.registerCommand("hql.cancelEvaluations", cancelEvaluations));
 
