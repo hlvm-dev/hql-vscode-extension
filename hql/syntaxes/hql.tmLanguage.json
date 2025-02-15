@@ -1,0 +1,27 @@
+{
+  "scopeName": "source.hql",
+  "name": "HQL",
+  "patterns": [
+    {
+      "match": "\\b(def|defsync|defn|defx|fn|fx|if|export|import|->|log|print|keyword|defenum|defmacro|let|loop)\\b",
+      "name": "keyword.control.hql"
+    },
+    {
+      "match": "\"(\\\\.|[^\"])*\"",
+      "name": "string.quoted.double.hql"
+    },
+    {
+      "match": "'(\\\\.|[^'])*'",
+      "name": "string.quoted.single.hql"
+    },
+    {
+      "match": ";.*$",
+      "name": "comment.line.semicolon.hql"
+    },
+    {
+      "match": "[()]",
+      "name": "delimiter.parenthesis.hql"
+    }
+  ],
+  "repository": {}
+}

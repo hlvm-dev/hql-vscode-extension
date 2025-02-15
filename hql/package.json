@@ -1,0 +1,87 @@
+{
+  "name": "hql",
+  "displayName": "hql-vscode-extension",
+  "description": "HQL extension with integrated nREPL and LSP support.",
+  "version": "0.0.1",
+  "publisher": "your-publisher",
+  "engines": {
+    "vscode": "^1.97.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:hql",
+    "onCommand:hql.evaluateExpression"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "hql",
+        "aliases": ["HQL"],
+        "extensions": [".hql"],
+        "configuration": "./config/language-configuration-hql.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "hql.evaluateOutermostExpression",
+        "title": "Evaluate Outermost HQL Expression"
+      },
+      {
+        "command": "hql.evaluateExpression",
+        "title": "Evaluate HQL Expression (Innermost)"
+      },
+      {
+        "command": "hql.cancelEvaluations",
+        "title": "Cancel All HQL Evaluations"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "hql.evaluateOutermostExpression",
+        "key": "cmd+enter",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.evaluateExpression",
+        "key": "cmd+ctrl+enter",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.cancelEvaluations",
+        "key": "escape",
+        "when": "editorLangId == hql && editorTextFocus"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "hql",
+        "scopeName": "source.hql",
+        "path": "./syntaxes/hql.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "debug": "npm run compile && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" --extensionDevelopmentPath=${PWD}"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.97.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "typescript": "^5.7.3",
+    "eslint": "^9.19.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "node-fetch": "^2.6.1",
+    "vscode-languageclient": "^8.0.2",
+    "vscode-languageserver": "^7.0.0",
+    "vscode-languageserver-textdocument": "^1.0.1"
+  }
+}
