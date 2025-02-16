@@ -29,9 +29,13 @@ import {
 
 import { TextDocument } from "vscode-languageserver-textdocument";
 
-import { HQLValue, HQLSymbol, HQLList } from "./type.ts";
+import { 
+  HQLValue,
+  HQLSymbol,
+  HQLList,
+} from "./modules/type.ts";
 
-import { parse } from "./parser.ts";
+import { parse } from "./modules/parser.ts";
 
 /* ----------------------------------------------------------------------
    4. Symbol Table, Enums, Function Signatures
