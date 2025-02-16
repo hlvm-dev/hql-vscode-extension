@@ -1,7 +1,7 @@
 import { 
     HQLValue, HQLList, makeSymbol, makeList, makeString, 
     makeNumber, makeBoolean, makeNil, makeEnumCase 
-  } from "../modules/type.ts";
+  } from "../modules/type";
   
   export function parse(input: string): HQLValue[] {
     const result: HQLValue[] = [];

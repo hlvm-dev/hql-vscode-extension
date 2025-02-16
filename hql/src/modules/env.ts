@@ -1,4 +1,4 @@
-import { HQLValue } from "./type.ts";
+import { HQLValue } from "./type";
 
 export class Env {
   public bindings: Record<string, HQLValue>;

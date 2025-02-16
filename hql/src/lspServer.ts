@@ -33,9 +33,9 @@ import {
   HQLValue,
   HQLSymbol,
   HQLList,
-} from "./modules/type.ts";
+} from "./modules/type";
 
-import { parse } from "./modules/parser.ts";
+import { parse } from "./modules/parser";
 
 /* ----------------------------------------------------------------------
    4. Symbol Table, Enums, Function Signatures

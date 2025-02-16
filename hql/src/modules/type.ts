@@ -11,7 +11,7 @@ export interface HQLFn {
   type: "function";
   params: string[];
   body: HQLValue[];
-  closure: import("./env.ts").Env;
+  closure: import("./env").Env;
   isMacro?: false;
   isPure?: boolean;
   hostFn?: (args: HQLValue[]) => Promise<HQLValue> | HQLValue;
@@ -23,7 +23,7 @@ export interface HQLMacro {
   type: "function";
   params: string[];
   body: HQLValue[];
-  closure: import("./env.ts").Env;
+  closure: import("./env").Env;
   isMacro: true;
 }
 

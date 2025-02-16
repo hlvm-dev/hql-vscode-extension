@@ -12,7 +12,9 @@
   ],
   "activationEvents": [
     "onLanguage:hql",
-    "onCommand:hql.evaluateExpression"
+    "onCommand:hql.evaluateExpression",
+    "onCommand:hql.evaluateOutermostExpression",
+    "onCommand:hql.cancelEvaluations"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -26,12 +28,12 @@
     ],
     "commands": [
       {
-        "command": "hql.evaluateOutermostExpression",
-        "title": "Evaluate Outermost HQL Expression"
-      },
-      {
         "command": "hql.evaluateExpression",
         "title": "Evaluate HQL Expression (Innermost)"
+      },
+      {
+        "command": "hql.evaluateOutermostExpression",
+        "title": "Evaluate Outermost HQL Expression"
       },
       {
         "command": "hql.cancelEvaluations",
@@ -64,12 +66,10 @@
     ]
   },
   "scripts": {
+    "clean": "rm -rf out",
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "eslint src",
-    "test": "vscode-test",
-    "debug": "npm run compile && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" --extensionDevelopmentPath=${PWD}"
+    "debug": "npm run clean && npm run compile && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" --extensionDevelopmentPath=${PWD}"
   },
   "devDependencies": {
     "@types/vscode": "^1.97.0",

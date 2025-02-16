@@ -1,5 +1,3 @@
-// src/extension.ts
-
 import * as path from "path";
 import * as vscode from "vscode";
 import {
@@ -8,14 +6,10 @@ import {
   ServerOptions,
   TransportKind
 } from "vscode-languageclient/node";
-import {
-  getCurrentExpressionRange,
-  getOutermostExpressionRange
-} from "./helpers/getCurrentExpressionRange";
+import { getCurrentExpressionRange, getOutermostExpressionRange } from "./helpers/getCurrentExpressionRange";
+import { showInlineEvaluation, showInlineError, clearInlineDecorations } from "./ui";
 
-let client: LanguageClient;
-
-async function evaluateCurrentExpression() {
+async function evaluateExpression() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showErrorMessage("No active editor found.");
@@ -26,12 +20,14 @@ async function evaluateCurrentExpression() {
     ? getCurrentExpressionRange(doc, editor.selection.active)
     : editor.selection;
   const code = doc.getText(range);
-  if (!code.trim()) {
-    vscode.window.showErrorMessage("No code to evaluate");
-    return;
+  const resultStr = "=> " + code;
+
+  try {
+    showInlineEvaluation(editor, range, resultStr);
+  } catch (err: any) {
+    showInlineError(editor, range, err.message || String(err));
+    vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
   }
-  // Instead of calling fakeEvaluate, we directly show the result.
-  vscode.window.showInformationMessage(`Evaluated => ${code}`);
 }
 
 async function evaluateOutermostExpression() {
@@ -45,17 +41,23 @@ async function evaluateOutermostExpression() {
     ? getOutermostExpressionRange(doc, editor.selection.active)
     : editor.selection;
   const code = doc.getText(range);
-  if (!code.trim()) {
-    vscode.window.showErrorMessage("No code to evaluate");
-    return;
+  const resultStr = "=> " + code;
+
+  try {
+    showInlineEvaluation(editor, range, resultStr);
+  } catch (err: any) {
+    showInlineError(editor, range, err.message || String(err));
+    vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
   }
-  // Directly display the "evaluated" code.
-  vscode.window.showInformationMessage(`Evaluated => ${code}`);
 }
 
-async function cancelEvaluations() {
-  vscode.window.showInformationMessage("Evaluations canceled");
+function cancelEvaluations() {
+  for (const ed of vscode.window.visibleTextEditors) {
+    clearInlineDecorations(ed.document);
+  }
 }
+
+let client: LanguageClient;
 
 export function activate(context: vscode.ExtensionContext) {
   const serverModule = context.asAbsolutePath(path.join("out", "lspServer.js"));
@@ -73,35 +75,17 @@ export function activate(context: vscode.ExtensionContext) {
       fileEvents: vscode.workspace.createFileSystemWatcher("**/*.hql")
     }
   };
-
-  client = new LanguageClient(
-    "hqlLanguageServer",
-    "HQL Language Server",
-    serverOptions,
-    clientOptions
-  );
+  client = new LanguageClient("hqlLanguageServer", "HQL Language Server", serverOptions, clientOptions);
   client.start();
   context.subscriptions.push(client);
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "hql.evaluateExpression",
-      evaluateCurrentExpression
-    )
-  );
-  context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "hql.evaluateOutermostExpression",
-      evaluateOutermostExpression
-    )
-  );
-  context.subscriptions.push(
-    vscode.commands.registerCommand("hql.cancelEvaluations", cancelEvaluations)
-  );
+  context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateExpression", evaluateExpression));
+  context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateOutermostExpression", evaluateOutermostExpression));
+  context.subscriptions.push(vscode.commands.registerCommand("hql.cancelEvaluations", cancelEvaluations));
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(e => {
-      // Clear inline decorations if needed.
+      clearInlineDecorations(e.document);
     })
   );
 }
