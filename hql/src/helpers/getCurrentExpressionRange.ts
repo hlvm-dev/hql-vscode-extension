@@ -1,6 +1,8 @@
-// src/helpers/getCurrentExpressionRange.ts
 import { TextDocument, Position, Range } from 'vscode';
 
+/** 
+ * Fallback: Expand outward until whitespace is encountered.
+ */
 function fallbackToSymbolRange(text: string, offset: number): { start: number; end: number } {
   let left = offset;
   while (left > 0 && /\S/.test(text[left - 1])) left--;
@@ -9,6 +11,9 @@ function fallbackToSymbolRange(text: string, offset: number): { start: number; e
   return { start: left, end: right };
 }
 
+/**
+ * Returns a balanced range for an s-expression starting at '('.
+ */
 export function getBalancedRange(text: string, offset: number): { start: number; end: number } | null {
   if (offset >= text.length) {
     offset = text.length - 1;
@@ -36,12 +41,63 @@ export function getBalancedRange(text: string, offset: number): { start: number;
   return end <= start ? fallbackToSymbolRange(text, offset) : { start, end };
 }
 
+/**
+ * Uses a regex to match a complete double-quoted string literal.
+ * Returns its full range (including quotes) if the caret offset falls within.
+ */
+function getFullStringRange(text: string, offset: number): { start: number; end: number } | null {
+  const regex = /"((\\.)|[^"\\])*"/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (offset >= start && offset < end) {
+      return { start, end };
+    }
+  }
+  return null;
+}
+
+/**
+ * getCurrentExpressionRange (used for innermost evaluation):
+ *
+ * If the caret is inside a string literal:
+ *   - If the caret falls inside an interpolation group \( ... ), return just that inner expression (without \() and ).
+ *   - Otherwise, return the entire inner text (i.e. the literal value without the quotes).
+ * For non-string content, use balanced parentheses / symbol fallback.
+ */
 export function getCurrentExpressionRange(document: TextDocument, position: Position): Range {
   const text = document.getText();
+  const caretOffset = document.offsetAt(position);
+  
+  const strRange = getFullStringRange(text, caretOffset);
+  if (strRange) {
+    // Extract the inner text (without quotes)
+    const literalText = text.slice(strRange.start, strRange.end);
+    const innerText = literalText.slice(1, literalText.length - 1);
+    const caretInLiteral = caretOffset - strRange.start - 1;
+    // Look for an interpolation group: \( ... )
+    const interpolationRegex = /\\\(([^)]*)\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = interpolationRegex.exec(innerText)) !== null) {
+      const groupStart = match.index;
+      const groupEnd = groupStart + match[0].length;
+      if (caretInLiteral >= groupStart && caretInLiteral < groupEnd) {
+        // Return only the inner expression (exclude "\(" and ")")
+        const exprStart = strRange.start + 1 + groupStart + 2; // skip opening quote and "\("
+        const exprEnd = strRange.start + 1 + groupEnd - 1;       // skip trailing ")"
+        return new Range(document.positionAt(exprStart), document.positionAt(exprEnd));
+      }
+    }
+    // If caret is not inside any interpolation group, return the entire inner text.
+    return new Range(document.positionAt(strRange.start + 1), document.positionAt(strRange.end - 1));
+  }
+  
+  // Not in a string literal: fallback to scanning current line for a balanced form.
   const line = document.lineAt(position);
   const lineStart = document.offsetAt(new Position(position.line, 0));
-  const caretOffset = document.offsetAt(position);
   const lineText = line.text;
+  const localOffset = caretOffset - lineStart;
   const candidates: { start: number; end: number }[] = [];
   for (let i = 0; i < lineText.length; i++) {
     if (lineText[i] === '(') {
@@ -55,19 +111,29 @@ export function getCurrentExpressionRange(document: TextDocument, position: Posi
   if (candidates.length > 0) {
     const innermost = candidates.reduce((prev, curr) => (curr.start > prev.start ? curr : prev));
     return new Range(document.positionAt(innermost.start), document.positionAt(innermost.end));
-  } else {
-    const localOffset = caretOffset - lineStart;
-    const localRange = fallbackToSymbolRange(lineText, localOffset);
-    return new Range(
-      document.positionAt(lineStart + localRange.start),
-      document.positionAt(lineStart + localRange.end)
-    );
   }
+  const localRange = fallbackToSymbolRange(lineText, localOffset);
+  return new Range(
+    document.positionAt(lineStart + localRange.start),
+    document.positionAt(lineStart + localRange.end)
+  );
 }
 
+/**
+ * getOutermostExpressionRange (used for outermost evaluation):
+ *
+ * If the caret is inside a string literal, return the entire literal (with quotes).
+ * Otherwise, scan the entire document for the top-level s-expression containing the caret.
+ */
 export function getOutermostExpressionRange(document: TextDocument, position: Position): Range {
   const text = document.getText();
   const caretOffset = document.offsetAt(position);
+  
+  const strRange = getFullStringRange(text, caretOffset);
+  if (strRange) {
+    return new Range(document.positionAt(strRange.start), document.positionAt(strRange.end));
+  }
+  
   let offset = 0;
   let topRange = null;
   while (offset < text.length) {
@@ -82,5 +148,5 @@ export function getOutermostExpressionRange(document: TextDocument, position: Po
     offset = formRange.end;
   }
   return topRange ? new Range(document.positionAt(topRange.start), document.positionAt(topRange.end))
-    : getCurrentExpressionRange(document, position);
+                  : getCurrentExpressionRange(document, position);
 }
