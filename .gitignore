@@ -1,0 +1,51 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for instrumented libs and coverage reports
+coverage
+nyc_output
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Next.js (if applicable)
+.next/
+
+# Nuxt.js (if applicable)
+.nuxt/
+
+# Output of 'npm pack'
+*.tgz
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# dotenv environment variables file
+.env
+.env.*
+
+# Yarn Integrity file
+.yarn-integrity
+
+# pm2 logs
+.pm2/logs/
+.pm2/pids/
+
+
