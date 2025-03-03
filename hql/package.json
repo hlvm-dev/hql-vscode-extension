@@ -1,27 +1,42 @@
 {
   "name": "hql",
-  "displayName": "hql-vscode-extension",
-  "description": "HQL extension with integrated nREPL and LSP support.",
-  "version": "0.0.1",
-  "publisher": "your-publisher",
+  "displayName": "HQL Language Support",
+  "description": "Advanced HQL extension with integrated nREPL, LSP support, and real-time evaluation",
+  "version": "1.0.0",
+  "publisher": "hql-team",
   "engines": {
     "vscode": "^1.97.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Snippets",
+    "Formatters",
+    "Linters"
+  ],
+  "keywords": [
+    "hql",
+    "lisp",
+    "repl",
+    "language-server"
   ],
   "activationEvents": [
     "onLanguage:hql",
     "onCommand:hql.evaluateExpression",
     "onCommand:hql.evaluateOutermostExpression",
-    "onCommand:hql.cancelEvaluations"
+    "onCommand:hql.cancelEvaluations",
+    "onCommand:hql.extractVariable",
+    "onCommand:hql.fixParentheses",
+    "onCommand:hql.formatDocument",
+    "onCommand:hql.startREPLServer",
+    "onCommand:hql.stopREPLServer",
+    "onCommand:hql.restartREPLServer"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
         "id": "hql",
-        "aliases": ["HQL"],
+        "aliases": ["HQL", "hql"],
         "extensions": [".hql"],
         "configuration": "./config/language-configuration-hql.json"
       }
@@ -29,15 +44,48 @@
     "commands": [
       {
         "command": "hql.evaluateExpression",
-        "title": "Evaluate HQL Expression (Innermost)"
+        "title": "HQL: Evaluate Expression",
+        "category": "HQL"
       },
       {
         "command": "hql.evaluateOutermostExpression",
-        "title": "Evaluate Outermost HQL Expression"
+        "title": "HQL: Evaluate Outermost Expression",
+        "category": "HQL"
       },
       {
         "command": "hql.cancelEvaluations",
-        "title": "Cancel All HQL Evaluations"
+        "title": "HQL: Cancel All Evaluations",
+        "category": "HQL"
+      },
+      {
+        "command": "hql.extractVariable",
+        "title": "HQL: Extract to Variable",
+        "category": "HQL"
+      },
+      {
+        "command": "hql.fixParentheses",
+        "title": "HQL: Fix Unmatched Parentheses",
+        "category": "HQL"
+      },
+      {
+        "command": "hql.formatDocument",
+        "title": "HQL: Format Document",
+        "category": "HQL"
+      },
+      {
+        "command": "hql.startREPLServer",
+        "title": "HQL: Start REPL Server",
+        "category": "HQL"
+      },
+      {
+        "command": "hql.stopREPLServer",
+        "title": "HQL: Stop REPL Server",
+        "category": "HQL" 
+      },
+      {
+        "command": "hql.restartREPLServer",
+        "title": "HQL: Restart REPL Server",
+        "category": "HQL"
       }
     ],
     "keybindings": [
@@ -55,6 +103,11 @@
         "command": "hql.cancelEvaluations",
         "key": "escape",
         "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.formatDocument",
+        "key": "shift+alt+f",
+        "when": "editorLangId == hql && editorTextFocus"
       }
     ],
     "grammars": [
@@ -63,12 +116,81 @@
         "scopeName": "source.hql",
         "path": "./syntaxes/hql.tmLanguage.json"
       }
-    ]
+    ],
+    "snippets": [
+      {
+        "language": "hql",
+        "path": "./snippets/hql.json"
+      }
+    ],
+    "configuration": {
+      "title": "HQL",
+      "properties": {
+        "hql.server.url": {
+          "type": "string",
+          "default": "http://localhost:5100",
+          "description": "URL of the HQL nREPL server"
+        },
+        "hql.server.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start the HQL nREPL server on extension activation"
+        },
+        "hql.format.indentSize": {
+          "type": "number",
+          "default": 2,
+          "description": "Number of spaces for each level of indentation"
+        },
+        "hql.format.alignParameters": {
+          "type": "boolean",
+          "default": true,
+          "description": "Align parameters in function calls"
+        },
+        "hql.completions.includeImported": {
+          "type": "boolean", 
+          "default": true,
+          "description": "Include suggestions from imported modules"
+        },
+        "hql.evaluation.showInline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show evaluation results inline"
+        },
+        "hql.evaluation.timeout": {
+          "type": "number",
+          "default": 10000,
+          "description": "Timeout for evaluations in milliseconds"
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "when": "editorLangId == hql",
+          "command": "hql.evaluateExpression",
+          "group": "1_modification"
+        },
+        {
+          "when": "editorLangId == hql",
+          "command": "hql.evaluateOutermostExpression",
+          "group": "1_modification"
+        },
+        {
+          "when": "editorHasSelection && editorLangId == hql",
+          "command": "hql.extractVariable",
+          "group": "2_modification"
+        }
+      ]
+    }
   },
   "scripts": {
     "clean": "rm -rf out",
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && vscode-test-cli",
+    "test:unit": "mocha -r ts-node/register 'src/test/unit/**/*.test.ts'",
     "debug": "npm run clean && npm run compile && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" --extensionDevelopmentPath=${PWD}"
   },
   "devDependencies": {
@@ -82,6 +204,8 @@
     "node-fetch": "^2.6.1",
     "vscode-languageclient": "^8.0.2",
     "vscode-languageserver": "^7.0.0",
-    "vscode-languageserver-textdocument": "^1.0.1"
+    "vscode-languageserver-textdocument": "^1.0.1",
+    "ts-node": "^10.9.2",
+    "mocha": "^10.3.0"
   }
 }
