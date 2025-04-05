@@ -1,61 +1,29 @@
 {
   "scopeName": "source.hql",
   "name": "HQL",
+  "fileTypes": ["hql"],
   "patterns": [
-    {
-      "include": "#comment"
-    },
-    {
-      "include": "#string"
-    },
-    {
-      "include": "#number"
-    },
-    {
-      "include": "#boolean"
-    },
-    {
-      "include": "#nil"
-    },
-    {
-      "include": "#keyword"
-    },
-    {
-      "include": "#special-form"
-    },
-    {
-      "include": "#function-definition"
-    },
-    {
-      "include": "#function-call"
-    },
-    {
-      "include": "#type-annotation"
-    },
-    {
-      "include": "#named-parameter"
-    },
-    {
-      "include": "#vector-literal"
-    },
-    {
-      "include": "#object-literal"
-    },
-    {
-      "include": "#set-literal"
-    },
-    {
-      "include": "#enum-case"
-    },
-    {
-      "include": "#regular-symbol"
-    },
-    {
-      "include": "#default-parameter"
-    },
-    {
-      "include": "#parens"
-    }
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#boolean" },
+    { "include": "#nil" },
+    { "include": "#keyword" },
+    { "include": "#special-form" },
+    { "include": "#function-definition" },
+    { "include": "#function-call" },
+    { "include": "#type-annotation" },
+    { "include": "#named-parameter" },
+    { "include": "#default-parameter" },
+    { "include": "#vector-literal" },
+    { "include": "#object-literal" },
+    { "include": "#set-literal" },
+    { "include": "#enum-declaration" },
+    { "include": "#class-declaration" },
+    { "include": "#import-declaration" },
+    { "include": "#dot-notation" },
+    { "include": "#regular-symbol" },
+    { "include": "#parens" }
   ],
   "repository": {
     "comment": {
@@ -63,6 +31,15 @@
         {
           "match": ";.*$",
           "name": "comment.line.semicolon.hql"
+        },
+        {
+          "begin": "/\\*",
+          "end": "\\*/",
+          "name": "comment.block.hql"
+        },
+        {
+          "match": "//.*$",
+          "name": "comment.line.double-slash.hql"
         }
       ]
     },
@@ -90,9 +67,7 @@
             }
           },
           "patterns": [
-            {
-              "include": "$self"
-            }
+            { "include": "$self" }
           ]
         }
       ]
@@ -114,140 +89,229 @@
       "name": "constant.other.keyword.hql"
     },
     "special-form": {
-      "match": "\\b(def|defsync|defn|defx|fn|fx|defmacro|let|if|loop|cond|when|case|do|for|str|get|set|new|->|print|export|defenum|import|keyword|hash-map|vector|list)\\b",
+      "match": "(?<=\\()(def|var|let|fx|fn|defmacro|macro|if|loop|recur|cond|when|unless|for|while|enum|class|case|method|constructor|do|repeat|import|export|set!|return|->|&|\\.|from:|to:|by:)\\b",
       "name": "keyword.control.hql"
     },
     "function-definition": {
-      "name": "meta.function.hql",
-      "begin": "\\((defn|defx|def|defsync|defmacro)\\s+([a-zA-Z\\-_][a-zA-Z0-9\\-_]*)",
-      "beginCaptures": {
-        "1": {
-          "name": "keyword.control.hql"
-        },
-        "2": {
-          "name": "entity.name.function.hql"
-        }
-      },
-      "end": "\\)",
       "patterns": [
         {
-          "include": "$self"
+          "begin": "\\((fn|fx)\\s+([a-zA-Z\\-_][a-zA-Z0-9\\-_\\?!]*)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.hql" },
+            "2": { "name": "entity.name.function.hql" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        {
+          "begin": "\\((defmacro|macro)\\s+([a-zA-Z\\-_][a-zA-Z0-9\\-_\\?!]*)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.hql" },
+            "2": { "name": "entity.name.function.macro.hql" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "include": "$self" }
+          ]
         }
       ]
     },
     "function-call": {
-      "name": "meta.function-call.hql",
-      "begin": "\\(([a-zA-Z\\-_][a-zA-Z0-9\\-_]*)",
+      "begin": "\\(([a-zA-Z\\-_][a-zA-Z0-9\\-_\\?!]*)",
       "beginCaptures": {
-        "1": {
-          "name": "entity.name.function.hql"
-        }
+        "1": { "name": "entity.name.function.hql" }
       },
       "end": "\\)",
       "patterns": [
-        {
-          "include": "$self"
-        }
+        { "include": "$self" }
       ]
     },
     "type-annotation": {
-      "match": "\\b([a-zA-Z][a-zA-Z0-9\\-_]*)\\s*:\\s*([A-Z][a-zA-Z0-9]*)",
+      "match": "\\b([a-zA-Z][a-zA-Z0-9\\-_]*)\\s*:\\s*([A-Z][a-zA-Z0-9]*(?:\\[\\])?)",
       "captures": {
-        "1": {
-          "name": "variable.parameter.hql"
-        },
-        "2": {
-          "name": "entity.name.type.hql"
-        }
+        "1": { "name": "variable.parameter.hql" },
+        "2": { "name": "entity.name.type.hql" }
       }
     },
     "named-parameter": {
-      "name": "meta.named-parameter.hql",
       "match": "\\b([a-zA-Z][a-zA-Z0-9\\-_]*):\\s*",
       "captures": {
-        "1": {
-          "name": "variable.parameter.hql"
-        }
+        "1": { "name": "variable.parameter.hql" }
+      }
+    },
+    "default-parameter": {
+      "match": "\\b([a-zA-Z][a-zA-Z0-9\\-_]*)\\s+(=)\\s+",
+      "captures": {
+        "1": { "name": "variable.parameter.hql" },
+        "2": { "name": "keyword.operator.assignment.hql" }
       }
     },
     "vector-literal": {
-      "name": "meta.vector.hql",
       "begin": "\\[",
       "end": "\\]",
+      "name": "meta.vector.hql",
       "patterns": [
-        {
-          "include": "$self"
-        }
+        { "include": "$self" }
       ]
     },
     "object-literal": {
-      "name": "meta.object.hql",
       "begin": "\\{",
       "end": "\\}",
+      "name": "meta.object.hql",
       "patterns": [
-        {
-          "include": "$self"
-        }
+        { "include": "$self" }
       ]
     },
     "set-literal": {
-      "name": "meta.set.hql",
       "begin": "#\\[",
       "beginCaptures": {
-        "0": {
-          "name": "punctuation.definition.set.begin.hql"
-        }
+        "0": { "name": "punctuation.definition.set.begin.hql" }
       },
       "end": "\\]",
       "endCaptures": {
-        "0": {
-          "name": "punctuation.definition.set.end.hql"
-        }
+        "0": { "name": "punctuation.definition.set.end.hql" }
       },
+      "name": "meta.set.hql",
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+    "enum-declaration": {
+      "begin": "\\(enum\\s+([A-Z][a-zA-Z0-9_]*)",
+      "beginCaptures": {
+        "0": { "name": "keyword.control.hql" },
+        "1": { "name": "entity.name.type.enum.hql" }
+      },
+      "end": "\\)",
       "patterns": [
         {
-          "include": "$self"
+          "begin": "\\(case\\s+([a-zA-Z][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "0": { "name": "keyword.control.hql" },
+            "1": { "name": "entity.name.type.enum.case.hql" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        { "include": "$self" }
+      ]
+    },
+    "class-declaration": {
+      "begin": "\\(class\\s+([A-Z][a-zA-Z0-9_]*)",
+      "beginCaptures": {
+        "0": { "name": "keyword.control.hql" },
+        "1": { "name": "entity.name.type.class.hql" }
+      },
+      "end": "\\)",
+      "patterns": [
+        {
+          "begin": "\\((var|let)\\s+([a-zA-Z][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.hql" },
+            "2": { "name": "variable.other.member.hql" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        {
+          "begin": "\\(constructor\\s*\\(",
+          "beginCaptures": {
+            "0": { "name": "keyword.control.hql" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        {
+          "begin": "\\((fn|fx)\\s+([a-zA-Z\\-_][a-zA-Z0-9\\-_\\?!]*)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.hql" },
+            "2": { "name": "entity.name.function.method.hql" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        { "include": "$self" }
+      ]
+    },
+    "import-declaration": {
+      "patterns": [
+        {
+          "begin": "\\(import\\s+\\[",
+          "beginCaptures": {
+            "0": { "name": "keyword.control.hql" }
+          },
+          "end": "\\]\\s+from\\s+([\"'])(.+?)\\1\\)",
+          "endCaptures": {
+            "0": { "name": "keyword.control.hql" },
+            "2": { "name": "string.quoted.hql" }
+          },
+          "patterns": [
+            {
+              "match": "([a-zA-Z][a-zA-Z0-9\\-_]*)\\s+as\\s+([a-zA-Z][a-zA-Z0-9\\-_]*)",
+              "captures": {
+                "1": { "name": "variable.other.hql" },
+                "2": { "name": "variable.other.hql" }
+              }
+            },
+            {
+              "match": "([a-zA-Z][a-zA-Z0-9\\-_]*)",
+              "name": "variable.other.hql"
+            },
+            { "include": "$self" }
+          ]
+        },
+        {
+          "begin": "\\(import\\s+([a-zA-Z][a-zA-Z0-9\\-_]*)",
+          "beginCaptures": {
+            "0": { "name": "keyword.control.hql" },
+            "1": { "name": "variable.other.hql" }
+          },
+          "end": "from\\s+([\"'])(.+?)\\1\\)",
+          "endCaptures": {
+            "0": { "name": "keyword.control.hql" },
+            "2": { "name": "string.quoted.hql" }
+          },
+          "patterns": [
+            { "include": "$self" }
+          ]
         }
       ]
     },
-    "enum-case": {
-      "name": "constant.other.symbol.enum.hql",
+    "dot-notation": {
       "match": "\\.([a-zA-Z][a-zA-Z0-9\\-_]*)",
       "captures": {
-        "1": {
-          "name": "entity.name.type.enum.hql"
-        }
+        "1": { "name": "variable.other.member.hql" }
       }
     },
     "regular-symbol": {
-      "match": "\\b([a-zA-Z\\-_][a-zA-Z0-9\\-_]*)\\b",
+      "match": "\\b([a-zA-Z\\-_][a-zA-Z0-9\\-_\\?!]*)\\b",
       "name": "variable.other.hql"
     },
-    "default-parameter": {
-      "match": "\\b([a-zA-Z][a-zA-Z0-9\\-_]*)\\s+=\\s+",
-      "captures": {
-        "1": {
-          "name": "variable.parameter.hql"
-        }
-      }
-    },
     "parens": {
-      "name": "meta.parens.hql",
-      "begin": "\\(",
-      "beginCaptures": {
-        "0": {
-          "name": "punctuation.section.parens.begin.hql"
-        }
-      },
-      "end": "\\)",
-      "endCaptures": {
-        "0": {
-          "name": "punctuation.section.parens.end.hql"
-        }
-      },
       "patterns": [
         {
-          "include": "$self"
+          "begin": "\\(",
+          "beginCaptures": {
+            "0": { "name": "punctuation.section.parens.begin.hql" }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": { "name": "punctuation.section.parens.end.hql" }
+          },
+          "name": "meta.parens.hql",
+          "patterns": [
+            { "include": "$self" }
+          ]
         }
       ]
     }

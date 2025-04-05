@@ -3,15 +3,21 @@
 	  "module": "commonjs",
 	  "target": "ES2019",
 	  "outDir": "out",
-	  "lib": ["es2019"],
+	  "lib": ["es2019", "dom"],
 	  "sourceMap": true,
 	  "rootDir": "src",
 	  "strict": true,
 	  "esModuleInterop": true,
+	  "resolveJsonModule": true,
+	  "skipLibCheck": true,
+	  "forceConsistentCasingInFileNames": true,
+	  "declaration": true
 	},
 	"exclude": [
 	  "node_modules",
 	  ".vscode-test"
+	],
+	"include": [
+	  "src/**/*"
 	]
   }
-  

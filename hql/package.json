@@ -1,7 +1,7 @@
 {
   "name": "hql",
   "displayName": "HQL Language Support",
-  "description": "Advanced HQL extension with integrated nREPL, LSP support, and real-time evaluation",
+  "description": "Advanced HQL extension with integrated nREPL, LSP support, and modern HQL syntax",
   "version": "1.0.0",
   "publisher": "hql-team",
   "engines": {
@@ -38,7 +38,11 @@
         "id": "hql",
         "aliases": ["HQL", "hql"],
         "extensions": [".hql"],
-        "configuration": "./config/language-configuration-hql.json"
+        "configuration": "./config/language-configuration-hql.json",
+        "icon": {
+          "light": "./icons/hql-light.png",
+          "dark": "./icons/hql-dark.png"
+        }
       }
     ],
     "commands": [
@@ -86,17 +90,88 @@
         "command": "hql.restartREPLServer",
         "title": "HQL: Restart REPL Server",
         "category": "HQL"
+      },
+      {
+        "command": "hql.paredit.wrapWithParentheses",
+        "title": "HQL Paredit: Wrap With ()",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.wrapWithBrackets",
+        "title": "HQL Paredit: Wrap With []",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.wrapWithBraces",
+        "title": "HQL Paredit: Wrap With {}",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.unwrap",
+        "title": "HQL Paredit: Unwrap Expression",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.slurpForward",
+        "title": "HQL Paredit: Slurp Forward",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.barfForward",
+        "title": "HQL Paredit: Barf Forward",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.slurpBackward",
+        "title": "HQL Paredit: Slurp Backward",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.barfBackward",
+        "title": "HQL Paredit: Barf Backward",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.splice",
+        "title": "HQL Paredit: Splice Expression",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.raise",
+        "title": "HQL Paredit: Raise Expression",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.transpose",
+        "title": "HQL Paredit: Transpose Expression",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.killNextForm",
+        "title": "HQL Paredit: Kill Next Form",
+        "category": "HQL Paredit"
+      },
+      {
+        "command": "hql.paredit.killPreviousForm",
+        "title": "HQL Paredit: Kill Previous Form",
+        "category": "HQL Paredit"
       }
     ],
     "keybindings": [
       {
         "command": "hql.evaluateOutermostExpression",
         "key": "cmd+enter",
+        "mac": "cmd+enter",
+        "win": "ctrl+enter",
+        "linux": "ctrl+enter",
         "when": "editorLangId == hql && editorTextFocus"
       },
       {
         "command": "hql.evaluateExpression",
         "key": "cmd+ctrl+enter",
+        "mac": "cmd+ctrl+enter",
+        "win": "ctrl+alt+enter",
+        "linux": "ctrl+alt+enter",
         "when": "editorLangId == hql && editorTextFocus"
       },
       {
@@ -107,6 +182,72 @@
       {
         "command": "hql.formatDocument",
         "key": "shift+alt+f",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.wrapWithParentheses",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.wrapWithBrackets",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.wrapWithBraces",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.slurpForward",
+        "key": "ctrl+right",
+        "mac": "ctrl+right",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.barfForward",
+        "key": "ctrl+shift+right",
+        "mac": "ctrl+shift+right",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.slurpBackward",
+        "key": "ctrl+left",
+        "mac": "ctrl+left",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.barfBackward",
+        "key": "ctrl+shift+left",
+        "mac": "ctrl+shift+left",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.splice",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.raise",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.killNextForm",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorLangId == hql && editorTextFocus"
+      },
+      {
+        "command": "hql.paredit.killPreviousForm",
+        "key": "ctrl+alt+shift+k",
+        "mac": "cmd+alt+shift+k",
         "when": "editorLangId == hql && editorTextFocus"
       }
     ],
@@ -131,10 +272,20 @@
           "default": "http://localhost:5100",
           "description": "URL of the HQL nREPL server"
         },
+        "hql.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the HQL REPL server executable"
+        },
         "hql.server.autoStart": {
           "type": "boolean",
           "default": false,
           "description": "Automatically start the HQL nREPL server on extension activation"
+        },
+        "hql.server.startTimeout": {
+          "type": "number",
+          "default": 10000,
+          "description": "Timeout in milliseconds for starting the HQL nREPL server"
         },
         "hql.format.indentSize": {
           "type": "number",
@@ -160,6 +311,28 @@
           "type": "number",
           "default": 10000,
           "description": "Timeout for evaluations in milliseconds"
+        },
+        "hql.paredit.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable paredit structural editing features"
+        },
+        "hql.theme.parenthesesColors": {
+          "type": "array",
+          "default": [
+            "#8000ff",
+            "#ff0000",
+            "#0000ff"
+          ],
+          "description": "Colors for nested parentheses (SICP style)",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hql.debug.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug logging for HQL extension"
         }
       }
     },
@@ -179,9 +352,80 @@
           "when": "editorHasSelection && editorLangId == hql",
           "command": "hql.extractVariable",
           "group": "2_modification"
+        },
+        {
+          "when": "editorLangId == hql",
+          "submenu": "hql.paredit",
+          "group": "3_modification"
+        }
+      ],
+      "hql.paredit": [
+        {
+          "command": "hql.paredit.wrapWithParentheses",
+          "group": "1_wrap"
+        },
+        {
+          "command": "hql.paredit.wrapWithBrackets",
+          "group": "1_wrap"
+        },
+        {
+          "command": "hql.paredit.wrapWithBraces",
+          "group": "1_wrap"
+        },
+        {
+          "command": "hql.paredit.unwrap",
+          "group": "1_wrap"
+        },
+        {
+          "command": "hql.paredit.slurpForward",
+          "group": "2_slurpbarf"
+        },
+        {
+          "command": "hql.paredit.slurpBackward",
+          "group": "2_slurpbarf"
+        },
+        {
+          "command": "hql.paredit.barfForward",
+          "group": "2_slurpbarf"
+        },
+        {
+          "command": "hql.paredit.barfBackward",
+          "group": "2_slurpbarf"
+        },
+        {
+          "command": "hql.paredit.splice",
+          "group": "3_splice"
+        },
+        {
+          "command": "hql.paredit.raise",
+          "group": "3_splice"
         }
       ]
-    }
+    },
+    "submenus": [
+      {
+        "id": "hql.paredit",
+        "label": "HQL Paredit"
+      }
+    ],
+    "problemPatterns": [
+      {
+        "name": "hql",
+        "regexp": "^(.*?):(\\d+):(\\d+):(.*?)$",
+        "file": 1,
+        "line": 2,
+        "column": 3,
+        "message": 4
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "hql",
+        "owner": "hql",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": "$hql"
+      }
+    ]
   },
   "scripts": {
     "clean": "rm -rf out",
@@ -191,7 +435,7 @@
     "lint": "eslint src --ext ts",
     "test": "npm run compile && vscode-test-cli",
     "test:unit": "mocha -r ts-node/register 'src/test/unit/**/*.test.ts'",
-    "debug": "npm run clean && npm run compile && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" --extensionDevelopmentPath=${PWD}"
+    "debug": "npm run clean && npm run compile && code --extensionDevelopmentPath=${PWD}"
   },
   "devDependencies": {
     "@types/vscode": "^1.97.0",
@@ -207,5 +451,20 @@
     "vscode-languageserver-textdocument": "^1.0.1",
     "ts-node": "^10.9.2",
     "mocha": "^10.3.0"
-  }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.0.2",
+    "vscode-languageserver": "^7.0.0",
+    "vscode-languageserver-textdocument": "^1.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hql-team/hql-vscode-extension.git"
+  },
+  "homepage": "https://github.com/hql-team/hql-vscode-extension",
+  "bugs": {
+    "url": "https://github.com/hql-team/hql-vscode-extension/issues"
+  },
+  "author": "HQL Team",
+  "license": "MIT"
 }

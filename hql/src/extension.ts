@@ -10,9 +10,16 @@ import { getExpressionRange, getOutermostExpressionRange } from "./helpers/getEx
 import { showInlineEvaluation, showInlineError, clearInlineDecorations } from "./ui";
 import { fetchEvaluation } from "./client";
 import { startServer, stopServer, restartServer, isServerRunning } from './server-manager';
+import { Logger } from './logger';
+import { activateParedit } from './paredit';
+
+// Create a logger instance
+const logger = new Logger(true);
 
 // Track active evaluation requests to support cancellation
 let activeEvaluations: Map<string, AbortController> = new Map();
+let client: LanguageClient;
+let statusBarItem: vscode.StatusBarItem;
 
 /**
  * Evaluate the current expression under cursor
@@ -43,13 +50,31 @@ async function evaluateExpression() {
   activeEvaluations.set(requestId, abortController);
   
   try {
-    const result = await fetchEvaluation(code, undefined, abortController.signal);
+    // Check if the REPL server is running
+    if (!await isServerRunning()) {
+      const startResponse = await vscode.window.showInformationMessage(
+        "HQL REPL server is not running. Do you want to start it?",
+        "Yes", "No"
+      );
+      
+      if (startResponse === "Yes") {
+        await startServer();
+      } else {
+        showInlineError(editor, range, "REPL server not running");
+        activeEvaluations.delete(requestId);
+        return;
+      }
+    }
+    
+    const serverUrl = vscode.workspace.getConfiguration('hql').get<string>('server.url', 'http://localhost:5100');
+    const result = await fetchEvaluation(code, serverUrl, abortController.signal);
     if (!activeEvaluations.has(requestId)) {
       // This request was canceled, don't show the result
       return;
     }
     
     showInlineEvaluation(editor, range, result);
+    logger.debug(`Evaluated expression: ${code} => ${result}`);
   } catch (err: any) {
     if (err.name === 'AbortError') {
       // Request was canceled, don't show error
@@ -58,6 +83,7 @@ async function evaluateExpression() {
     
     showInlineError(editor, range, err.message || String(err));
     vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
+    logger.error(`Evaluation error: ${err.message || err}`);
   } finally {
     activeEvaluations.delete(requestId);
   }
@@ -92,13 +118,31 @@ async function evaluateOutermostExpression() {
   activeEvaluations.set(requestId, abortController);
   
   try {
-    const result = await fetchEvaluation(code, undefined, abortController.signal);
+    // Check if the REPL server is running
+    if (!await isServerRunning()) {
+      const startResponse = await vscode.window.showInformationMessage(
+        "HQL REPL server is not running. Do you want to start it?",
+        "Yes", "No"
+      );
+      
+      if (startResponse === "Yes") {
+        await startServer();
+      } else {
+        showInlineError(editor, range, "REPL server not running");
+        activeEvaluations.delete(requestId);
+        return;
+      }
+    }
+    
+    const serverUrl = vscode.workspace.getConfiguration('hql').get<string>('server.url', 'http://localhost:5100');
+    const result = await fetchEvaluation(code, serverUrl, abortController.signal);
     if (!activeEvaluations.has(requestId)) {
       // This request was canceled, don't show the result
       return;
     }
     
     showInlineEvaluation(editor, range, result);
+    logger.debug(`Evaluated outermost expression: ${code} => ${result}`);
   } catch (err: any) {
     if (err.name === 'AbortError') {
       // Request was canceled, don't show error
@@ -107,6 +151,7 @@ async function evaluateOutermostExpression() {
     
     showInlineError(editor, range, err.message || String(err));
     vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
+    logger.error(`Evaluation error: ${err.message || err}`);
   } finally {
     activeEvaluations.delete(requestId);
   }
@@ -128,11 +173,38 @@ function cancelEvaluations() {
   }
   
   vscode.window.showInformationMessage("All evaluations canceled.");
+  logger.info("All evaluations canceled");
 }
 
-let client: LanguageClient;
+/**
+ * Update the REPL server status in the status bar
+ */
+async function updateServerStatus() {
+  if (!statusBarItem) {
+    return;
+  }
+
+  const running = await isServerRunning();
+  if (running) {
+    statusBarItem.text = "$(check) HQL REPL Server";
+    statusBarItem.tooltip = "HQL REPL Server is running";
+    statusBarItem.command = "hql.stopREPLServer";
+  } else {
+    statusBarItem.text = "$(stop) HQL REPL Server";
+    statusBarItem.tooltip = "HQL REPL Server is not running";
+    statusBarItem.command = "hql.startREPLServer";
+  }
+  statusBarItem.show();
+}
 
 export function activate(context: vscode.ExtensionContext) {
+  logger.info("Activating HQL extension");
+  
+  // Set up the status bar item
+  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  context.subscriptions.push(statusBarItem);
+  updateServerStatus();
+  
   // Set up the LSP server
   const serverModule = context.asAbsolutePath(path.join("out", "lspServer.js"));
   const serverOptions: ServerOptions = {
@@ -147,20 +219,35 @@ export function activate(context: vscode.ExtensionContext) {
     documentSelector: [{ scheme: "file", language: "hql" }],
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher("**/*.hql")
-    }
+    },
+    outputChannelName: "HQL Language Server"
   };
   client = new LanguageClient("hqlLanguageServer", "HQL Language Server", serverOptions, clientOptions);
-  client.start();
-  context.subscriptions.push(client);
+  
+  // Start the client, which also starts the server
+  context.subscriptions.push(client.start());
+  logger.info("HQL Language Server started");
 
-  // Register commands
+  // Register commands for evaluation
   context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateExpression", evaluateExpression));
   context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateOutermostExpression", evaluateOutermostExpression));
   context.subscriptions.push(vscode.commands.registerCommand("hql.cancelEvaluations", cancelEvaluations));
 
-  context.subscriptions.push(vscode.commands.registerCommand('hql.startREPLServer', startServer));
-  context.subscriptions.push(vscode.commands.registerCommand('hql.stopREPLServer', stopServer));
-  context.subscriptions.push(vscode.commands.registerCommand('hql.restartREPLServer', restartServer));
+  // Register REPL server commands
+  context.subscriptions.push(vscode.commands.registerCommand('hql.startREPLServer', async () => {
+    await startServer();
+    updateServerStatus();
+  }));
+  
+  context.subscriptions.push(vscode.commands.registerCommand('hql.stopREPLServer', async () => {
+    await stopServer();
+    updateServerStatus();
+  }));
+  
+  context.subscriptions.push(vscode.commands.registerCommand('hql.restartREPLServer', async () => {
+    await restartServer();
+    updateServerStatus();
+  }));
 
   // Register diagnostic collection
   const diagnosticCollection = vscode.languages.createDiagnosticCollection('hql');
@@ -169,40 +256,8 @@ export function activate(context: vscode.ExtensionContext) {
   // Update for text changes to clear decorations
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(e => {
-      clearInlineDecorations(e.document);
-    })
-  );
-  
-  // Register code actions provider
-  context.subscriptions.push(
-    vscode.languages.registerCodeActionsProvider('hql', {
-      provideCodeActions(document, range, context, token) {
-        const codeActions: vscode.CodeAction[] = [];
-        
-        // Handle adding missing parentheses
-        if (context.diagnostics.some(d => d.message.includes("Unmatched"))) {
-          const fixAction = new vscode.CodeAction("Fix unmatched parentheses", vscode.CodeActionKind.QuickFix);
-          fixAction.command = {
-            title: "Fix parentheses",
-            command: "hql.fixParentheses",
-            arguments: [document.uri, range]
-          };
-          codeActions.push(fixAction);
-        }
-        
-        // Handle extracting expressions
-        const selectedText = document.getText(range);
-        if (selectedText && !selectedText.startsWith("(") && !selectedText.endsWith(")")) {
-          const extractAction = new vscode.CodeAction("Extract to variable", vscode.CodeActionKind.RefactorExtract);
-          extractAction.command = {
-            title: "Extract to variable",
-            command: "hql.extractVariable",
-            arguments: [document.uri, range, selectedText]
-          };
-          codeActions.push(extractAction);
-        }
-        
-        return codeActions;
+      if (e.document.languageId === 'hql') {
+        clearInlineDecorations(e.document);
       }
     })
   );
@@ -342,19 +397,69 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
   
-  // Notify user that the extension is ready
-  vscode.window.showInformationMessage('HQL extension activated with enhanced syntax support');
-
+  // Register code actions provider
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider('hql', {
+      provideCodeActions(document, range, context, token) {
+        const codeActions: vscode.CodeAction[] = [];
+        
+        // Handle adding missing parentheses
+        if (context.diagnostics.some(d => d.message.includes("Unmatched") || d.message.includes("parenthes"))) {
+          const fixAction = new vscode.CodeAction("Fix unmatched parentheses", vscode.CodeActionKind.QuickFix);
+          fixAction.command = {
+            title: "Fix parentheses",
+            command: "hql.fixParentheses",
+            arguments: [document.uri, range]
+          };
+          codeActions.push(fixAction);
+        }
+        
+        // Handle extracting expressions
+        const selectedText = document.getText(range);
+        if (selectedText && !selectedText.startsWith("(") && !selectedText.endsWith(")")) {
+          const extractAction = new vscode.CodeAction("Extract to variable", vscode.CodeActionKind.RefactorExtract);
+          extractAction.command = {
+            title: "Extract to variable",
+            command: "hql.extractVariable",
+            arguments: [document.uri, range, selectedText]
+          };
+          codeActions.push(extractAction);
+        }
+        
+        return codeActions;
+      }
+    })
+  );
+  
+  // Activate paredit functionality
+  activateParedit(context);
+  
   // Optional: Auto-start the server if configured
   const autoStart = vscode.workspace.getConfiguration('hql').get('server.autoStart', false);
   if (autoStart) {
-    startServer().catch(err => {
-      vscode.window.showErrorMessage(`Failed to auto-start HQL server: ${err}`);
-    });
+    startServer()
+      .then(() => updateServerStatus())
+      .catch(err => {
+        vscode.window.showErrorMessage(`Failed to auto-start HQL server: ${err}`);
+      });
   }
+  
+  // Notify user that the extension is ready
+  vscode.window.showInformationMessage('HQL extension activated with enhanced syntax support');
+  logger.info('HQL extension activated successfully');
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  logger.info('Deactivating HQL extension');
+  
+  // Clear any evaluations
+  cancelEvaluations();
+  
+  // Stop the server
+  stopServer().catch(err => {
+    logger.error(`Error stopping server: ${err}`);
+  });
+  
   if (client) {
     return client.stop();
   }

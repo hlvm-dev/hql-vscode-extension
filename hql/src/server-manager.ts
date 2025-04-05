@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
 import { isServerAlive } from './client';
+import { Logger, LogLevel } from './logger';
+
+// Create a logger
+const logger = new Logger(false, LogLevel.INFO);
 
 interface ServerProcess {
   process: cp.ChildProcess;
@@ -31,9 +37,95 @@ export async function isServerRunning(): Promise<boolean> {
 }
 
 /**
+ * Find the server executable on the system
+ */
+function findServerExecutable(): string | null {
+  // Try different strategies to find the executable
+  
+  // 1. Check for environment variable
+  const envPath = process.env.HQL_SERVER_PATH;
+  if (envPath && isExecutableAt(envPath)) {
+    return envPath;
+  }
+  
+  // 2. Check configuration setting
+  const configPath = vscode.workspace.getConfiguration('hql').get<string>('server.path');
+  if (configPath && isExecutableAt(configPath)) {
+    return configPath;
+  }
+  
+  // 3. Check for installed server in common locations
+  const commonLocations = getCommonServerLocations();
+  for (const location of commonLocations) {
+    if (isExecutableAt(location)) {
+      return location;
+    }
+  }
+  
+  // 4. Ask the user to locate the executable
+  return null;
+}
+
+/**
+ * Check if a file exists and is executable
+ */
+function isExecutableAt(filePath: string): boolean {
+  try {
+    // Check if the file exists
+    const fs = require('fs');
+    const stats = fs.statSync(filePath);
+    
+    // On Windows, any file can be executed
+    if (process.platform === 'win32') {
+      return stats.isFile();
+    }
+    
+    // On Unix-like systems, check if the file is executable by the current user
+    return stats.isFile() && (stats.mode & 0o100) !== 0;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Get common locations where the server executable might be installed
+ */
+function getCommonServerLocations(): string[] {
+  const locations: string[] = [];
+  
+  if (process.platform === 'win32') {
+    // Windows
+    locations.push(
+      path.join('C:\\Program Files\\HQL\\hql-server.exe'),
+      path.join('C:\\Program Files (x86)\\HQL\\hql-server.exe'),
+      path.join(os.homedir(), 'AppData\\Local\\HQL\\hql-server.exe'),
+      path.join(os.homedir(), '.hql\\hql-server.exe')
+    );
+  } else if (process.platform === 'darwin') {
+    // macOS
+    locations.push(
+      '/usr/local/bin/hql-server',
+      '/opt/homebrew/bin/hql-server',
+      path.join(os.homedir(), '.hql/bin/hql-server')
+    );
+  } else {
+    // Linux
+    locations.push(
+      '/usr/bin/hql-server',
+      '/usr/local/bin/hql-server',
+      path.join(os.homedir(), '.hql/bin/hql-server')
+    );
+  }
+  
+  return locations;
+}
+
+/**
  * Start the HQL REPL server
  */
 export async function startServer(): Promise<boolean> {
+  logger.info('Starting HQL REPL server...');
+  
   // Don't start if already running
   if (await isServerRunning()) {
     vscode.window.showInformationMessage('HQL REPL server is already running');
@@ -45,20 +137,46 @@ export async function startServer(): Promise<boolean> {
     outputChannel.show();
     outputChannel.appendLine('Starting HQL REPL server...');
     
-    // Get server executable path - this would need to be configured or bundled
-    const serverExecutable = findServerExecutable();
+    // Get server executable path
+    let serverExecutable = findServerExecutable();
+    
     if (!serverExecutable) {
-      vscode.window.showErrorMessage('Could not find HQL REPL server executable');
-      return false;
+      // Ask the user to provide the executable path
+      const result = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        openLabel: 'Select HQL Server Executable',
+        filters: {
+          'Executables': process.platform === 'win32' ? ['exe'] : ['*']
+        }
+      });
+      
+      if (result && result.length > 0) {
+        serverExecutable = result[0].fsPath;
+        
+        // Save this path for future use
+        vscode.workspace.getConfiguration('hql').update('server.path', serverExecutable, true);
+      } else {
+        outputChannel.appendLine('No server executable selected');
+        vscode.window.showErrorMessage('HQL REPL server executable not found');
+        return false;
+      }
     }
     
     // Get server port from URL
     const serverUrl = new URL(getServerUrl());
     const port = serverUrl.port || '5100';
     
+    // Get timeout from settings
+    const timeout = vscode.workspace.getConfiguration('hql').get<number>('server.startTimeout', 10000);
+    
     // Start the server process
+    outputChannel.appendLine(`Starting server from: ${serverExecutable}`);
+    outputChannel.appendLine(`Using port: ${port}`);
+    
     const childProcess = cp.spawn(serverExecutable, ['--port', port], {
-      cwd: require('path').dirname(serverExecutable),
+      cwd: path.dirname(serverExecutable),
       stdio: 'pipe',
       shell: process.platform === 'win32'
     });
@@ -91,10 +209,11 @@ export async function startServer(): Promise<boolean> {
     
     // Wait for the server to start up
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = Math.ceil(timeout / 500);
     
     while (attempts < maxAttempts) {
       if (await isServerAlive(getServerUrl())) {
+        outputChannel.appendLine('Server started successfully');
         vscode.window.showInformationMessage('HQL REPL server started successfully');
         return true;
       }
@@ -102,13 +221,19 @@ export async function startServer(): Promise<boolean> {
       // Wait a bit before trying again
       await new Promise(resolve => setTimeout(resolve, 500));
       attempts++;
+      
+      if (attempts % 2 === 0) {
+        outputChannel.appendLine(`Waiting for server to start (${attempts * 500}ms)...`);
+      }
     }
     
     // If we get here, the server didn't start in time
+    outputChannel.appendLine('Server did not start in time');
     vscode.window.showErrorMessage('HQL REPL server did not start in time');
     await stopServer(); // Clean up
     return false;
   } catch (error) {
+    logger.error(`Failed to start HQL REPL server: ${error}`);
     vscode.window.showErrorMessage(`Failed to start HQL REPL server: ${error}`);
     return false;
   }
@@ -118,6 +243,8 @@ export async function startServer(): Promise<boolean> {
  * Stop the HQL REPL server
  */
 export async function stopServer(): Promise<boolean> {
+  logger.info('Stopping HQL REPL server...');
+  
   if (!serverProcess) {
     vscode.window.showInformationMessage('No HQL REPL server is running');
     return true;
@@ -126,8 +253,32 @@ export async function stopServer(): Promise<boolean> {
   try {
     serverProcess.outputChannel.appendLine('Stopping HQL REPL server...');
     
-    // Try graceful shutdown first
-    serverProcess.process.kill('SIGTERM');
+    // Try graceful shutdown first via HTTP request
+    try {
+      const response = await fetch(`${getServerUrl()}/shutdown`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'shutdown' })
+      });
+      
+      if (response.ok) {
+        serverProcess.outputChannel.appendLine('Server shutdown request successful');
+        
+        // Wait a bit for graceful shutdown
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // If the server is still running, force kill it
+        if (!serverProcess.process.killed) {
+          serverProcess.process.kill('SIGTERM');
+        }
+      } else {
+        // If HTTP shutdown fails, try to kill the process
+        serverProcess.process.kill('SIGTERM');
+      }
+    } catch (err) {
+      // If HTTP shutdown fails, try to kill the process
+      serverProcess.process.kill('SIGTERM');
+    }
     
     // Wait a bit for graceful shutdown
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -143,6 +294,7 @@ export async function stopServer(): Promise<boolean> {
     vscode.window.showInformationMessage('HQL REPL server has been stopped');
     return true;
   } catch (error) {
+    logger.error(`Failed to stop HQL REPL server: ${error}`);
     vscode.window.showErrorMessage(`Failed to stop HQL REPL server: ${error}`);
     return false;
   }
@@ -152,29 +304,8 @@ export async function stopServer(): Promise<boolean> {
  * Restart the HQL REPL server
  */
 export async function restartServer(): Promise<boolean> {
+  logger.info('Restarting HQL REPL server...');
+  
   await stopServer();
   return await startServer();
-}
-
-/**
- * Find the server executable on the system
- */
-function findServerExecutable(): string | null {
-  // This would need to be adapted based on how the server is packaged/installed
-  // For now, we'll return a dummy path or look for environment variables
-  
-  // Check for environment variable
-  const envPath = process.env.HQL_SERVER_PATH;
-  if (envPath) {
-    return envPath;
-  }
-  
-  // For demo purposes - this would need to be replaced with actual logic
-  if (process.platform === 'darwin') {
-    return '/usr/local/bin/hql-server';
-  } else if (process.platform === 'win32') {
-    return 'C:\\Program Files\\HQL\\hql-server.exe';
-  } else {
-    return '/usr/bin/hql-server';
-  }
 }

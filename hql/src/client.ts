@@ -1,3 +1,6 @@
+/**
+ * Interface for nREPL response
+ */
 export interface NReplResponse {
   error?: string;
   result?: string;
@@ -33,7 +36,7 @@ export async function fetchEvaluation(
     };
     
     // Send the request to the nREPL server
-    const response = await fetch(serverUrl, requestOptions);
+    const response = await fetch(`${serverUrl}/eval`, requestOptions);
     
     // Parse the response
     if (!response.ok) {
@@ -80,13 +83,17 @@ export async function fetchEvaluation(
  */
 export async function isServerAlive(serverUrl: string = "http://localhost:5100"): Promise<boolean> {
   try {
-    // Send a simple ping
+    // Send a simple ping with a short timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1000);
+    
     const response = await fetch(`${serverUrl}/ping`, {
       method: "GET",
       headers: { "Content-Type": "application/json" },
-      timeout: 1000 // Short timeout for responsiveness
-    } as any);
+      signal: controller.signal
+    });
     
+    clearTimeout(timeoutId);
     return response.ok;
   } catch (error) {
     return false;
@@ -113,5 +120,88 @@ export async function getServerInfo(serverUrl: string = "http://localhost:5100")
     return await response.json();
   } catch (error) {
     return null;
+  }
+}
+
+/**
+ * Load a file into the REPL server's context
+ * 
+ * @param filePath The path of the file to load
+ * @param serverUrl The nREPL server URL
+ * @returns Promise resolving to success message or error
+ */
+export async function loadFile(
+  filePath: string,
+  serverUrl: string = "http://localhost:5100"
+): Promise<string> {
+  try {
+    // Prepare the request
+    const requestOptions: RequestInit = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        action: "load-file", 
+        path: filePath 
+      })
+    };
+    
+    // Send the request to the nREPL server
+    const response = await fetch(`${serverUrl}/command`, requestOptions);
+    
+    // Parse the response
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+    }
+    
+    const json = (await response.json()) as NReplResponse;
+    
+    // Handle errors
+    if (json.error) {
+      throw new Error(json.error);
+    }
+    
+    return json.result || "File loaded successfully";
+  } catch (error) {
+    // Re-throw the error
+    throw error;
+  }
+}
+
+/**
+ * Reset the REPL server's context
+ * 
+ * @param serverUrl The nREPL server URL
+ * @returns Promise resolving to success message or error
+ */
+export async function resetRepl(
+  serverUrl: string = "http://localhost:5100"
+): Promise<string> {
+  try {
+    // Prepare the request
+    const requestOptions: RequestInit = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reset" })
+    };
+    
+    // Send the request to the nREPL server
+    const response = await fetch(`${serverUrl}/command`, requestOptions);
+    
+    // Parse the response
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+    }
+    
+    const json = (await response.json()) as NReplResponse;
+    
+    // Handle errors
+    if (json.error) {
+      throw new Error(json.error);
+    }
+    
+    return json.result || "REPL reset successfully";
+  } catch (error) {
+    // Re-throw the error
+    throw error;
   }
 }
