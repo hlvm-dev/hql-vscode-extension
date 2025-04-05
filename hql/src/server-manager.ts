@@ -3,10 +3,10 @@ import * as cp from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { isServerAlive } from './client';
-import { Logger, LogLevel } from './logger';
+import { Logger } from './logger';
 
 // Create a logger
-const logger = new Logger(false, LogLevel.INFO);
+const logger = new Logger(false);
 
 interface ServerProcess {
   process: cp.ChildProcess;
@@ -62,7 +62,7 @@ function findServerExecutable(): string | null {
     }
   }
   
-  // 4. Ask the user to locate the executable
+  // 4. If no executable found, we'll ask the user to locate it
   return null;
 }
 

@@ -205,3 +205,50 @@ export async function resetRepl(
     throw error;
   }
 }
+
+/**
+ * Formats the output from the REPL to be more readable
+ * 
+ * @param result The raw result from the REPL
+ * @returns Formatted result string
+ */
+export function formatReplOutput(result: string): string {
+  if (!result) return "";
+  
+  // Try to detect if the result is JSON
+  try {
+    // If it's valid JSON, format it nicely
+    const parsed = JSON.parse(result);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    // Not valid JSON, so just return the string
+    return result;
+  }
+}
+
+/**
+ * Submit a REPL command and return the result
+ * 
+ * @param command The command to execute
+ * @param serverUrl The nREPL server URL
+ * @param signal Optional AbortSignal for cancellation
+ * @returns Promise resolving to the command result
+ */
+export async function executeReplCommand(
+  command: string,
+  serverUrl: string = "http://localhost:5100",
+  signal?: AbortSignal
+): Promise<string> {
+  try {
+    // Use the fetchEvaluation function with the command
+    return await fetchEvaluation(command, serverUrl, signal);
+  } catch (error) {
+    if (signal?.aborted) {
+      const abortError = new Error("Command execution cancelled");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+    
+    throw error;
+  }
+}
