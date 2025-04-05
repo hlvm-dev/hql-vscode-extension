@@ -1,4 +1,3 @@
-// src/client.ts
 export interface NReplResponse {
   error?: string;
   result?: string;

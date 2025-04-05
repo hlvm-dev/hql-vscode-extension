@@ -1,4 +1,3 @@
-// src/ui.ts
 import * as vscode from "vscode";
 
 interface DecorationEntry {
@@ -118,7 +117,7 @@ export function showInlineEvaluation(
       contentText: ` => ${formattedResult}`,
       margin: "0 0 0 0.3em",
       color: evaluationTextColor,
-      fontStyle: isPending ? "italic" : "normal", // Using fontStyle instead of fontSize
+      fontStyle: isPending ? "italic" : "normal",
       fontWeight: isPending ? "normal" : "bold"
     },
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
@@ -161,46 +160,4 @@ export function showInlineError(
   
   editor.setDecorations(inlineType, [{ range }]);
   addDecoration(editor.document.uri.toString(), { type: inlineType, range });
-}
-
-/**
- * Create a VS Code hover with formatted content
- */
-export function createHover(content: string, range: vscode.Range): vscode.Hover {
-  return new vscode.Hover(content, range);
-}
-
-/**
- * Show a status bar message
- */
-export function showStatusMessage(message: string, timeout?: number): void {
-  if (timeout !== undefined) {
-    vscode.window.setStatusBarMessage(message, timeout);
-  } else {
-    vscode.window.setStatusBarMessage(message);
-  }
-}
-
-/**
- * Update the editor with code replacements
- */
-export async function updateEditor(
-  editor: vscode.TextEditor,
-  range: vscode.Range,
-  replacement: string
-): Promise<boolean> {
-  try {
-    const success = await editor.edit(editBuilder => {
-      editBuilder.replace(range, replacement);
-    });
-    
-    if (success) {
-      showStatusMessage(`Updated code successfully`, 3000);
-    }
-    
-    return success;
-  } catch (error) {
-    vscode.window.showErrorMessage(`Failed to update code: ${error}`);
-    return false;
-  }
 }

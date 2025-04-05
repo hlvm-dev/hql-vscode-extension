@@ -1,6 +1,4 @@
-// src/server-manager.ts
 import * as vscode from 'vscode';
-import * as path from 'path';
 import * as cp from 'child_process';
 import { isServerAlive } from './client';
 
@@ -58,14 +56,14 @@ export async function startServer(): Promise<boolean> {
     const serverUrl = new URL(getServerUrl());
     const port = serverUrl.port || '5100';
     
-    // Start the server process - fixed variable name to avoid shadowing global process
+    // Start the server process
     const childProcess = cp.spawn(serverExecutable, ['--port', port], {
-      cwd: path.dirname(serverExecutable),
+      cwd: require('path').dirname(serverExecutable),
       stdio: 'pipe',
-      shell: process.platform === 'win32'  // Use global process object
+      shell: process.platform === 'win32'
     });
     
-    // Handle output with explicit types
+    // Handle output
     childProcess.stdout?.on('data', (data: Buffer) => {
       outputChannel.append(data.toString());
     });
@@ -74,7 +72,7 @@ export async function startServer(): Promise<boolean> {
       outputChannel.append(data.toString());
     });
     
-    // Handle process exit with explicit type
+    // Handle process exit
     childProcess.on('exit', (code: number | null) => {
       if (code !== 0) {
         outputChannel.appendLine(`Server exited with code ${code}`);

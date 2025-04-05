@@ -6,7 +6,7 @@ import {
   ServerOptions,
   TransportKind
 } from "vscode-languageclient/node";
-import { getCurrentExpressionRange, getOutermostExpressionRange } from "./helpers/getCurrentExpressionRange";
+import { getExpressionRange, getOutermostExpressionRange } from "./helpers/getExpressionRange";
 import { showInlineEvaluation, showInlineError, clearInlineDecorations } from "./ui";
 import { fetchEvaluation } from "./client";
 import { startServer, stopServer, restartServer, isServerRunning } from './server-manager';
@@ -25,7 +25,7 @@ async function evaluateExpression() {
   }
   const doc = editor.document;
   const range = editor.selection.isEmpty
-    ? getCurrentExpressionRange(doc, editor.selection.active)
+    ? getExpressionRange(doc, editor.selection.active)
     : editor.selection;
   
   const code = doc.getText(range);
@@ -35,7 +35,7 @@ async function evaluateExpression() {
   }
 
   // Show a "busy" indicator immediately
-  const busyDecoration = showInlineEvaluation(editor, range, "Evaluating...");
+  showInlineEvaluation(editor, range, "Evaluating...");
   
   // Create an AbortController for this request
   const abortController = new AbortController();
@@ -84,7 +84,7 @@ async function evaluateOutermostExpression() {
   }
 
   // Show a "busy" indicator immediately
-  const busyDecoration = showInlineEvaluation(editor, range, "Evaluating...");
+  showInlineEvaluation(editor, range, "Evaluating...");
   
   // Create an AbortController for this request
   const abortController = new AbortController();
@@ -162,12 +162,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.commands.registerCommand('hql.stopREPLServer', stopServer));
   context.subscriptions.push(vscode.commands.registerCommand('hql.restartREPLServer', restartServer));
 
-
   // Register diagnostic collection
   const diagnosticCollection = vscode.languages.createDiagnosticCollection('hql');
   context.subscriptions.push(diagnosticCollection);
 
-  // Update the client.ts file to support cancellation
+  // Update for text changes to clear decorations
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(e => {
       clearInlineDecorations(e.document);
