@@ -6,9 +6,19 @@ import * as vscode from 'vscode';
  */
 export class ConfigManager {
   private static instance: ConfigManager;
+  // Event emitter for config changes
+  private _onDidChangeConfiguration = new vscode.EventEmitter<void>();
+  public readonly onDidChangeConfiguration = this._onDidChangeConfiguration.event;
 
   private constructor() {
     // Private constructor for singleton pattern
+    
+    // Listen for configuration changes
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('hql')) {
+        this._onDidChangeConfiguration.fire();
+      }
+    });
   }
 
   /**
@@ -87,6 +97,34 @@ export class ConfigManager {
    */
   public getParenthesesColors(): string[] {
     return this.get<string[]>('theme.parenthesesColors', ['#8000ff', '#ff0000', '#0000ff']);
+  }
+  
+  /**
+   * Get indentation size for formatting
+   */
+  public getIndentSize(): number {
+    return this.get<number>('format.indentSize', 2);
+  }
+  
+  /**
+   * Get whether to align parameters in function calls
+   */
+  public shouldAlignParameters(): boolean {
+    return this.get<boolean>('format.alignParameters', true);
+  }
+  
+  /**
+   * Get whether to include imported symbols in completion suggestions
+   */
+  public includeImportedCompletions(): boolean {
+    return this.get<boolean>('completions.includeImported', true);
+  }
+  
+  /**
+   * Get whether debug logging is enabled
+   */
+  public isDebugEnabled(): boolean {
+    return this.get<boolean>('debug.enabled', false);
   }
 }
 

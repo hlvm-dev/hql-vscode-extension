@@ -43,13 +43,26 @@ async function updateServerStatus() {
 export function activate(context: vscode.ExtensionContext) {
   logger.info("Activating HQL extension");
   
-  // Set up the status bar item
+  // Initialize UI manager
+  ui.initialize(context);
+  
+  // Set up the status bar item for REPL server
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   context.subscriptions.push(statusBarItem);
   updateServerStatus();
   
   // Set up the LSP server
   const serverModule = context.asAbsolutePath(path.join("out", "lspServer.js"));
+  
+  // Check if server module exists
+  const fs = require('fs');
+  if (!fs.existsSync(serverModule)) {
+    logger.error(`Server module not found at: ${serverModule}`);
+    vscode.window.showErrorMessage(`HQL Language Server module not found: ${serverModule}`);
+  } else {
+    logger.info(`Server module found at: ${serverModule}`);
+  }
+  
   const serverOptions: ServerOptions = {
     run: { module: serverModule, transport: TransportKind.ipc },
     debug: {
@@ -58,20 +71,50 @@ export function activate(context: vscode.ExtensionContext) {
       options: { execArgv: ["--nolazy", "--inspect=6009"] }
     }
   };
+  
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "hql" }],
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher("**/*.hql")
     },
-    outputChannelName: "HQL Language Server"
+    outputChannelName: "HQL Language Server",
+    revealOutputChannelOn: 4, // Show on error
+    middleware: {
+      // Add middleware for better completion handling
+      provideCompletionItem: (document, position, context, token, next) => {
+        // Log completion requests to aid debugging
+        logger.debug(`Completion requested at ${position.line}:${position.character}`);
+        return next(document, position, context, token);
+      }
+    }
   };
-  client = new LanguageClient("hqlLanguageServer", "HQL Language Server", serverOptions, clientOptions);
   
-  // Start the client, which also starts the server
-  context.subscriptions.push({ dispose: () => client.stop() });
-  client.start();
-  logger.info("HQL Language Server started");
-
+  try {
+    client = new LanguageClient("hqlLanguageServer", "HQL Language Server", serverOptions, clientOptions);
+    
+    // Start the client, which also starts the server
+    context.subscriptions.push({ dispose: () => client.stop() });
+    
+    // Update UI status to starting
+    ui.updateLspStatus("Starting");
+    
+    // Start client with promise handling
+    const startPromise = client.start();
+    startPromise.then(() => {
+      logger.info("Language server started successfully!");
+      ui.updateLspStatus("Running");
+      vscode.window.showInformationMessage("HQL Language Server started successfully");
+    }).catch(error => {
+      logger.error(`Failed to start language server: ${error}`);
+      ui.updateLspStatus("Failed", false);
+      vscode.window.showErrorMessage(`HQL Language Server failed to start: ${error}`);
+    });
+  } catch (error) {
+    logger.error(`Error setting up language client: ${error}`);
+    ui.updateLspStatus("Setup Error", false);
+    vscode.window.showErrorMessage(`HQL Language Server setup error: ${error}`);
+  }
+  
   // Register commands for evaluation
   context.subscriptions.push(vscode.commands.registerCommand(
     "hql.evaluateExpression", 
@@ -108,20 +151,11 @@ export function activate(context: vscode.ExtensionContext) {
   const diagnosticCollection = vscode.languages.createDiagnosticCollection('hql');
   context.subscriptions.push(diagnosticCollection);
 
-  // Update for text changes to clear decorations
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeTextDocument(e => {
-      if (e.document.languageId === 'hql') {
-        ui.clearDecorations(e.document);
-        
-        // Reapply rainbow parentheses if enabled
-        if (config.isPareEditEnabled() && vscode.window.activeTextEditor?.document === e.document) {
-          ui.applyRainbowParentheses(vscode.window.activeTextEditor);
-        }
-      }
-    })
-  );
-  
+  // Register manual diagnostics command
+  context.subscriptions.push(vscode.commands.registerCommand('hql.diagnostics', () => {
+    runDiagnostics(context);
+  }));
+
   // Apply rainbow parentheses when changing active editor
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(editor => {
@@ -133,190 +167,57 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
   
-  // Register extract variable command
-  context.subscriptions.push(
-    vscode.commands.registerCommand("hql.extractVariable", async (uri: vscode.Uri, range: vscode.Range, text: string) => {
-      const varName = await vscode.window.showInputBox({
-        prompt: "Enter variable name",
-        placeHolder: "my-var"
-      });
-      
-      if (!varName) return;
-      
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.uri.toString() !== uri.toString()) return;
-      
-      // Insert a let binding at the start of the current form
-      const document = editor.document;
-      const line = document.lineAt(range.start.line);
-      const indent = line.text.substring(0, line.firstNonWhitespaceCharacterIndex);
-      
-      // Find the start of the containing form
-      let formStart = range.start;
-      for (let lineNum = range.start.line; lineNum >= 0; lineNum--) {
-        const currLine = document.lineAt(lineNum).text;
-        const openParenIndex = currLine.indexOf("(");
-        if (openParenIndex >= 0) {
-          formStart = new vscode.Position(lineNum, openParenIndex);
-          break;
-        }
-      }
-      
-      // Perform the edit
-      await editor.edit(editBuilder => {
-        // Replace the selected text with the variable name
-        editBuilder.replace(range, varName);
-        
-        // Insert the let binding
-        const letBinding = `(let [\n${indent}  ${varName} ${text}\n${indent}]\n${indent}  `;
-        editBuilder.insert(formStart, letBinding);
-        
-        // Insert closing parenthesis at the end of the form
-        const lastLine = document.lineAt(document.lineCount - 1);
-        editBuilder.insert(new vscode.Position(lastLine.lineNumber, lastLine.text.length), "\n)");
-      });
-    })
-  );
-  
-  // Register fix parentheses command
-  context.subscriptions.push(
-    vscode.commands.registerCommand("hql.fixParentheses", (uri: vscode.Uri, range: vscode.Range) => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.uri.toString() !== uri.toString()) return;
-      
-      const document = editor.document;
-      const text = document.getText();
-      
-      // Count open and closing parentheses
-      let openCount = 0;
-      let closeCount = 0;
-      
-      for (const char of text) {
-        if (char === '(') openCount++;
-        else if (char === ')') closeCount++;
-      }
-      
-      editor.edit(editBuilder => {
-        if (openCount > closeCount) {
-          // Add missing closing parentheses
-          const missingCloseCount = openCount - closeCount;
-          editBuilder.insert(document.positionAt(text.length), ')'.repeat(missingCloseCount));
-          ui.showInfo(`Added ${missingCloseCount} missing closing parenthese${missingCloseCount === 1 ? '' : 's'}`);
-        } else if (closeCount > openCount) {
-          // Remove extra closing parentheses
-          const extraCloseCount = closeCount - openCount;
-          let lastPos = text.length - 1;
-          for (let i = 0; i < extraCloseCount; i++) {
-            while (lastPos >= 0 && text[lastPos] !== ')') {
-              lastPos--;
-            }
-            if (lastPos >= 0) {
-              editBuilder.delete(new vscode.Range(
-                document.positionAt(lastPos),
-                document.positionAt(lastPos + 1)
-              ));
-              lastPos--;
-            }
-          }
-          ui.showInfo(`Removed ${extraCloseCount} extra closing parenthese${extraCloseCount === 1 ? '' : 's'}`);
-        } else {
-          ui.showInfo('Parentheses are already balanced.');
-        }
-      });
-    })
-  );
-  
-  // Set up document formatting provider 
-  context.subscriptions.push(
-    vscode.languages.registerDocumentFormattingEditProvider('hql', {
-      provideDocumentFormattingEdits(document: vscode.TextDocument): vscode.TextEdit[] {
-        const text = document.getText();
-        
-        // Simple HQL formatting - maintain indentation based on parentheses
-        const lines = text.split('\n');
-        const formattedLines: string[] = [];
-        let indent = 0;
-        
-        for (let i = 0; i < lines.length; i++) {
-          let line = lines[i].trim();
-          
-          // Skip empty lines and comments
-          if (line === '' || line.startsWith(';')) {
-            formattedLines.push(line);
-            continue;
-          }
-          
-          // Handle parentheses
-          const openCount = (line.match(/\(/g) || []).length;
-          const closeCount = (line.match(/\)/g) || []).length;
-          
-          // Calculate the right indent for this line
-          const currIndent = ' '.repeat(indent * 2);
-          formattedLines.push(currIndent + line);
-          
-          // Adjust indent for the next line
-          indent += openCount;
-          indent -= closeCount;
-          
-          // Keep indent non-negative
-          indent = Math.max(0, indent);
-        }
-        
-        // Create a TextEdit for the whole document
-        const formatted = formattedLines.join('\n');
-        return [vscode.TextEdit.replace(
-          new vscode.Range(0, 0, document.lineCount, 0),
-          formatted
-        )];
-      }
-    })
-  );
-  
-  // Register code actions provider
-  context.subscriptions.push(
-    vscode.languages.registerCodeActionsProvider('hql', {
-      provideCodeActions(document, range, context, token) {
-        const codeActions: vscode.CodeAction[] = [];
-        
-        // Handle adding missing parentheses
-        if (context.diagnostics.some(d => d.message.includes("Unmatched") || d.message.includes("parenthes"))) {
-          const fixAction = new vscode.CodeAction("Fix unmatched parentheses", vscode.CodeActionKind.QuickFix);
-          fixAction.command = {
-            title: "Fix parentheses",
-            command: "hql.fixParentheses",
-            arguments: [document.uri, range]
-          };
-          codeActions.push(fixAction);
-        }
-        
-        // Handle extracting expressions
-        const selectedText = document.getText(range);
-        if (selectedText && !selectedText.startsWith("(") && !selectedText.endsWith(")")) {
-          const extractAction = new vscode.CodeAction("Extract to variable", vscode.CodeActionKind.RefactorExtract);
-          extractAction.command = {
-            title: "Extract to variable",
-            command: "hql.extractVariable",
-            arguments: [document.uri, range, selectedText]
-          };
-          codeActions.push(extractAction);
-        }
-        
-        return codeActions;
-      }
-    })
-  );
-  
   // Activate paredit functionality
   activateParedit(context);
   
-  // Optional: Auto-start the server if configured
-  if (config.shouldAutoStartServer()) {
-    startServer()
-      .then(() => updateServerStatus())
-      .catch(err => {
-        ui.showError(`Failed to auto-start HQL server: ${err}`);
+  // Register format command manually as a fallback
+  context.subscriptions.push(
+    vscode.commands.registerCommand('hql.formatDocument', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'hql') {
+        return;
+      }
+      
+      // Simple HQL formatting - maintain indentation based on parentheses
+      const text = editor.document.getText();
+      const lines = text.split('\n');
+      const formattedLines: string[] = [];
+      let indent = 0;
+      
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim();
+        
+        // Skip empty lines and comments
+        if (line === '' || line.startsWith(';')) {
+          formattedLines.push(line);
+          continue;
+        }
+        
+        // Handle parentheses
+        const openCount = (line.match(/\(/g) || []).length;
+        const closeCount = (line.match(/\)/g) || []).length;
+        
+        // Calculate the right indent for this line
+        const currIndent = ' '.repeat(indent * 2);
+        formattedLines.push(currIndent + line);
+        
+        // Adjust indent for the next line
+        indent += openCount;
+        indent -= closeCount;
+        
+        // Keep indent non-negative
+        indent = Math.max(0, indent);
+      }
+      
+      // Create a TextEdit for the whole document
+      const formatted = formattedLines.join('\n');
+      
+      editor.edit(editBuilder => {
+        const fullRange = new vscode.Range(0, 0, editor.document.lineCount, 0);
+        editBuilder.replace(fullRange, formatted);
       });
-  }
+    })
+  );
   
   // Notify user that the extension is ready
   ui.showInfo('HQL extension activated with enhanced syntax support');
@@ -338,4 +239,49 @@ export function deactivate(): Thenable<void> | undefined {
     return client.stop();
   }
   return undefined;
+}
+
+/**
+ * Simple diagnostic function to help users troubleshoot
+ */
+function runDiagnostics(context: vscode.ExtensionContext): void {
+  const diagnosticOutput = vscode.window.createOutputChannel('HQL Diagnostics');
+  diagnosticOutput.clear();
+  diagnosticOutput.show();
+  
+  diagnosticOutput.appendLine('HQL Extension Diagnostics');
+  diagnosticOutput.appendLine('==========================');
+  
+  // Check if VSCode recognizes HQL language
+  vscode.languages.getLanguages().then(langs => {
+    if (langs.includes('hql')) {
+      diagnosticOutput.appendLine('✅ HQL language is registered');
+    } else {
+      diagnosticOutput.appendLine('❌ HQL language is NOT registered!');
+    }
+    
+    // Check for the server file
+    const serverPath = context.asAbsolutePath(path.join("out", "lspServer.js"));
+    const fs = require('fs');
+    if (fs.existsSync(serverPath)) {
+      diagnosticOutput.appendLine(`✅ Server module found at: ${serverPath}`);
+    } else {
+      diagnosticOutput.appendLine(`❌ Server module NOT found at: ${serverPath}`);
+    }
+    
+    // Check grammar file
+    const grammarPath = context.asAbsolutePath(path.join("syntaxes", "hql.tmLanguage.json"));
+    if (fs.existsSync(grammarPath)) {
+      diagnosticOutput.appendLine(`✅ Grammar file found at: ${grammarPath}`);
+    } else {
+      diagnosticOutput.appendLine(`❌ Grammar file NOT found at: ${grammarPath}`);
+    }
+    
+    diagnosticOutput.appendLine('\nTroubleshooting suggestions:');
+    diagnosticOutput.appendLine('- Try reloading VS Code (Developer: Reload Window)');
+    diagnosticOutput.appendLine('- Check VS Code logs for errors (Help > Toggle Developer Tools)');
+    diagnosticOutput.appendLine('- Ensure you ran "npm run compile" before launching the extension');
+    
+    vscode.window.showInformationMessage('HQL diagnostics complete. See output for details.');
+  });
 }

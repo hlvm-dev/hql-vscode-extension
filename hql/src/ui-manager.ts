@@ -13,6 +13,7 @@ const logger = new Logger(false);
 export class UIManager {
   private static instance: UIManager;
   private decorationMap: Map<string, DecorationEntry[]> = new Map();
+  private statusBarItem: vscode.StatusBarItem | undefined;
 
   // Style constants for UI elements
   private readonly COLORS = {
@@ -45,6 +46,32 @@ export class UIManager {
       UIManager.instance = new UIManager();
     }
     return UIManager.instance;
+  }
+
+  /**
+   * Initialize the UI manager (call this from extension activation)
+   */
+  public initialize(context: vscode.ExtensionContext): void {
+    // Create a status bar item for LSP status
+    this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    this.statusBarItem.text = "HQL LSP: $(sync~spin) Starting...";
+    this.statusBarItem.show();
+    context.subscriptions.push(this.statusBarItem);
+  }
+
+  /**
+   * Update the LSP status in the status bar
+   */
+  public updateLspStatus(status: string, running: boolean = true): void {
+    if (!this.statusBarItem) return;
+    
+    if (running) {
+      this.statusBarItem.text = `HQL LSP: $(check) ${status}`;
+      this.statusBarItem.tooltip = `HQL Language Server is ${status}`;
+    } else {
+      this.statusBarItem.text = `HQL LSP: $(x) ${status}`;
+      this.statusBarItem.tooltip = `HQL Language Server is ${status}`;
+    }
   }
 
   /**
@@ -274,6 +301,86 @@ export class UIManager {
         ...closeParenRanges[i]
       ]);
     }
+  }
+
+  /**
+   * Highlight matching parentheses at cursor position
+   */
+  public highlightMatchingParentheses(editor: vscode.TextEditor): void {
+    if (editor.document.languageId !== 'hql') return;
+    
+    const position = editor.selection.active;
+    const document = editor.document;
+    const text = document.getText();
+    const offset = document.offsetAt(position);
+    
+    const currentChar = text.charAt(offset);
+    const prevChar = offset > 0 ? text.charAt(offset - 1) : '';
+    
+    // Check if cursor is on an opening delimiter
+    if ('([{'.includes(currentChar)) {
+      const openChar = currentChar;
+      const closeChar = {'(': ')', '[': ']', '{': '}'}[openChar];
+      let depth = 1;
+      
+      // Find matching closing delimiter
+      for (let i = offset + 1; i < text.length; i++) {
+        if (text[i] === openChar) depth++;
+        else if (text[i] === closeChar) {
+          depth--;
+          if (depth === 0) {
+            // Found matching pair
+            const openPos = document.positionAt(offset);
+            const closePos = document.positionAt(i);
+            this.highlightBracketPair(editor, openPos, closePos);
+            break;
+          }
+        }
+      }
+    }
+    // Check if cursor is just after a closing delimiter
+    else if (')]}'.includes(prevChar)) {
+      const closeChar = prevChar;
+      const openChar = {')': '(', ']': '[', '}': '{'}[closeChar];
+      let depth = 1;
+      
+      // Find matching opening delimiter
+      for (let i = offset - 2; i >= 0; i--) {
+        if (text[i] === closeChar) depth++;
+        else if (text[i] === openChar) {
+          depth--;
+          if (depth === 0) {
+            // Found matching pair
+            const openPos = document.positionAt(i);
+            const closePos = document.positionAt(offset - 1);
+            this.highlightBracketPair(editor, openPos, closePos);
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  /**
+   * Highlight a pair of matching brackets/parentheses
+   */
+  private highlightBracketPair(editor: vscode.TextEditor, openPos: vscode.Position, closePos: vscode.Position): void {
+    const decoration = vscode.window.createTextEditorDecorationType({
+      backgroundColor: 'rgba(100, 100, 255, 0.2)',
+      border: '1px solid rgba(100, 100, 255, 0.5)'
+    });
+    
+    const ranges = [
+      new vscode.Range(openPos, openPos.translate(0, 1)),
+      new vscode.Range(closePos, closePos.translate(0, 1))
+    ];
+    
+    editor.setDecorations(decoration, ranges);
+    
+    // Automatically remove highlight after a short delay
+    setTimeout(() => {
+      decoration.dispose();
+    }, 500);
   }
 
   /**

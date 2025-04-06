@@ -125,3 +125,194 @@
     "body": [
       "(import ${1:module} from \"${2:path}\")"
     ],
+    "description": "Import module namespace"
+  },
+  "Export Symbols": {
+    "prefix": "export",
+    "body": [
+      "(export [${1:symbol1}, ${2:symbol2}])"
+    ],
+    "description": "Export symbols from current module"
+  },
+  "Export Single Symbol": {
+    "prefix": "export-one",
+    "body": [
+      "(export \"${1:name}\" ${2:value})"
+    ],
+    "description": "Export a single symbol with name"
+  },
+  "Do Block": {
+    "prefix": "do",
+    "body": [
+      "(do",
+      "  ${1:expression1}",
+      "  ${2:expression2}",
+      "  ${3:expression3})"
+    ],
+    "description": "Sequential execution block"
+  },
+  "Repeat Loop": {
+    "prefix": "repeat",
+    "body": [
+      "(repeat ${1:count}",
+      "  ${2:body})"
+    ],
+    "description": "Repeat a body a specific number of times"
+  },
+  "Vector Literal": {
+    "prefix": "vector",
+    "body": [
+      "[${1:item1}, ${2:item2}, ${3:item3}]"
+    ],
+    "description": "Vector/array literal"
+  },
+  "Object/Map Literal": {
+    "prefix": "object",
+    "body": [
+      "{\"${1:key1}\": ${2:value1}, \"${3:key2}\": ${4:value2}}"
+    ],
+    "description": "Object/map literal"
+  },
+  "Set Literal": {
+    "prefix": "set",
+    "body": [
+      "#[${1:item1}, ${2:item2}, ${3:item3}]"
+    ],
+    "description": "Set literal"
+  },
+  "Class Definition": {
+    "prefix": "class",
+    "body": [
+      "(class ${1:ClassName}",
+      "  ;; Class fields",
+      "  (var ${2:field1})",
+      "  (let ${3:constField} ${4:value})",
+      "",
+      "  ;; Constructor",
+      "  (constructor (${5:params})",
+      "    ${6:constructorBody})",
+      "",
+      "  ;; Methods",
+      "  (fn ${7:methodName} (${8:params})",
+      "    ${9:methodBody}))"
+    ],
+    "description": "Define a class with fields, constructor, and methods"
+  },
+  "Enum Definition": {
+    "prefix": "enum",
+    "body": [
+      "(enum ${1:EnumName}",
+      "  (case ${2:case1})",
+      "  (case ${3:case2})",
+      "  (case ${4:case3}))"
+    ],
+    "description": "Define an enumeration type"
+  },
+  "Enum with Value Definition": {
+    "prefix": "enum-values",
+    "body": [
+      "(enum ${1:EnumName} : ${2:Type}",
+      "  (case ${3:case1} ${4:value1})",
+      "  (case ${5:case2} ${6:value2})",
+      "  (case ${7:case3} ${8:value3}))"
+    ],
+    "description": "Define an enumeration type with values"
+  },
+  "Enum with Associated Values": {
+    "prefix": "enum-associated",
+    "body": [
+      "(enum ${1:EnumName}",
+      "  (case ${2:case1} ${3:param1}: ${4:Type1} ${5:param2}: ${6:Type2})",
+      "  (case ${7:case2} ${8:param3}: ${9:Type3}))"
+    ],
+    "description": "Define an enumeration with associated values"
+  },
+  "Function with Default Parameters": {
+    "prefix": "fn-defaults",
+    "body": [
+      "(fn ${1:name} (${2:param1} = ${3:default1} ${4:param2} = ${5:default2})",
+      "  ${6:body})"
+    ],
+    "description": "Function with default parameter values"
+  },
+  "Pure Function with Default Parameters": {
+    "prefix": "fx-defaults",
+    "body": [
+      "(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:default1} ${5:param2}: ${6:Type2} = ${7:default2}) (-> ${8:ReturnType})",
+      "  ${9:body})"
+    ],
+    "description": "Pure function with typed parameters and default values"
+  },
+  "Define Macro": {
+    "prefix": "defmacro",
+    "body": [
+      "(defmacro ${1:name} (${2:params})",
+      "  `(${3:body}))"
+    ],
+    "description": "Define a macro with quasiquote syntax"
+  },
+  "Rest Parameters": {
+    "prefix": "rest-params",
+    "body": [
+      "(fn ${1:name} (${2:param} & ${3:rest})",
+      "  ${4:body})"
+    ],
+    "description": "Function with rest parameters"
+  },
+  "Method Chain Call": {
+    "prefix": "method-chain",
+    "body": [
+      "(${1:object}",
+      "  .${2:method1} ${3:args1}",
+      "  .${4:method2} ${5:args2}",
+      "  .${6:method3} ${7:args3})"
+    ],
+    "description": "Method chain call with dot notation"
+  },
+  "Return Statement": {
+    "prefix": "return",
+    "body": [
+      "(return ${1:expression})"
+    ],
+    "description": "Return a value from a function"
+  },
+  "Console Log": {
+    "prefix": "log",
+    "body": [
+      "(console.log ${1:message})"
+    ],
+    "description": "Log a message to the console"
+  },
+  "Print Statement": {
+    "prefix": "print",
+    "body": [
+      "(print ${1:message})"
+    ],
+    "description": "Print a message"
+  },
+  "If-Let Expression": {
+    "prefix": "if-let",
+    "body": [
+      "(if-let (${1:name} ${2:value})",
+      "  ${3:then-branch}",
+      "  ${4:else-branch})"
+    ],
+    "description": "Conditional evaluation with binding"
+  },
+  "Comment Block": {
+    "prefix": "comment-block",
+    "body": [
+      "/*",
+      " * ${1:comment}",
+      " */"
+    ],
+    "description": "Multi-line comment block"
+  },
+  "Line Comment": {
+    "prefix": "comment",
+    "body": [
+      ";; ${1:comment}"
+    ],
+    "description": "Single line comment"
+  }
+}
