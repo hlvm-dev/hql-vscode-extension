@@ -23,11 +23,15 @@ import {
   SymbolKind,
   SemanticTokensParams,
   SemanticTokensBuilder,
+  TextEdit
 } from 'vscode-languageserver/node';
 
 import {
   TextDocument
 } from 'vscode-languageserver-textdocument';
+
+import * as path from 'path';
+import * as fs from 'fs';
 
 import { parse, SExp, SList, SSymbol, SString, SNumber, SBoolean, SNil } from './parser';
 import { createTextDocumentAdapter, ITextDocument } from './document-adapter';
@@ -132,6 +136,17 @@ const hqlKeywords = [
 // Keep track of document symbols to provide code completion
 let documentSymbols: Map<string, SymbolInformation[]> = new Map();
 
+// Track imported symbols for better completions
+interface ImportedSymbol {
+  name: string;          // Local name
+  sourceName: string;    // Original name
+  sourceModule: string;  // Module it came from
+  kind: SymbolKind;      // Kind of symbol
+}
+
+// Map from document URI to imported symbols
+const importedSymbols: Map<string, ImportedSymbol[]> = new Map();
+
 // Manages the connection initialization
 connection.onInitialize((params: InitializeParams) => {
   const result: InitializeResult = {
@@ -140,7 +155,7 @@ connection.onInitialize((params: InitializeParams) => {
       // Tell the client that the server supports code completion
       completionProvider: {
         resolveProvider: true,
-        triggerCharacters: ['(', '.', ':', ' ']
+        triggerCharacters: ['(', '.', ':', ' ', '[', '"', '/']
       },
       // Enable hover support
       hoverProvider: true,
@@ -177,6 +192,7 @@ connection.onInitialized(() => {
   documents.onDidChangeContent(change => {
     validateTextDocument(change.document);
     updateDocumentSymbols(change.document);
+    updateImportedSymbols(change.document);
   });
 });
 
@@ -184,15 +200,258 @@ connection.onInitialized(() => {
 documents.onDidOpen(event => {
   validateTextDocument(event.document);
   updateDocumentSymbols(event.document);
+  updateImportedSymbols(event.document);
 });
 
 // Listen for text document save events
 documents.onDidSave(event => {
   validateTextDocument(event.document);
   updateDocumentSymbols(event.document);
+  updateImportedSymbols(event.document);
 });
 
-// Helper function to update document symbols
+/**
+ * Update imported symbols for a document
+ */
+async function updateImportedSymbols(textDocument: TextDocument): Promise<void> {
+  try {
+    const uri = textDocument.uri;
+    const text = textDocument.getText();
+    
+    // Clear existing imported symbols
+    importedSymbols.set(uri, []);
+    
+    // Parse the document
+    const expressions = parse(text);
+    
+    // Find import statements
+    for (const expr of expressions) {
+      if (isList(expr) && expr.elements.length > 0 && 
+          isSymbol(expr.elements[0]) && expr.elements[0].name === 'import') {
+        
+        // Vector-based import: (import [symbol1, symbol2 as alias] from "module")
+        if (expr.elements.length > 3 && 
+            isList(expr.elements[1]) && 
+            isSymbol(expr.elements[2]) && expr.elements[2].name === 'from' && 
+            ((isString(expr.elements[3])) || 
+             (isLiteral(expr.elements[3]) && 
+              expr.elements[3].type === "literal" && 
+              typeof expr.elements[3].value === 'string'))) {
+          
+          const importList = expr.elements[1];
+          const modulePath = isString(expr.elements[3]) ? 
+            expr.elements[3].value : 
+            String((expr.elements[3].type === "literal" ? expr.elements[3].value : ""));
+          
+          // Process each imported symbol
+          for (let i = 0; i < importList.elements.length; i++) {
+            const currentElem = importList.elements[i];
+            // Skip commas
+            if (isSymbol(currentElem) && currentElem.name === ',') {
+              continue;
+            }
+            
+            // Check for "symbol as alias" pattern
+            if (isSymbol(currentElem) && 
+                i + 2 < importList.elements.length) {
+              const asElem = importList.elements[i+1];
+              const aliasElem = importList.elements[i+2];
+              
+              if (isSymbol(asElem) && asElem.name === 'as' && 
+                  isSymbol(aliasElem)) {
+                
+                const sourceName = currentElem.name;
+                const localName = aliasElem.name;
+                
+                // Add to imported symbols with the local name
+                addImportedSymbol(uri, {
+                  name: localName,
+                  sourceName,
+                  sourceModule: modulePath,
+                  kind: SymbolKind.Variable // Default, will update later
+                });
+                
+                // Skip the "as alias" part
+                i += 2;
+              }
+              // Regular symbol import
+              else if (isSymbol(currentElem)) {
+                const symbolName = currentElem.name;
+                
+                // Add to imported symbols
+                addImportedSymbol(uri, {
+                  name: symbolName,
+                  sourceName: symbolName,
+                  sourceModule: modulePath,
+                  kind: SymbolKind.Variable // Default, will update later
+                });
+              }
+            }
+            // Regular symbol import without as/alias
+            else if (isSymbol(currentElem)) {
+              const symbolName = currentElem.name;
+              
+              // Add to imported symbols
+              addImportedSymbol(uri, {
+                name: symbolName,
+                sourceName: symbolName,
+                sourceModule: modulePath,
+                kind: SymbolKind.Variable // Default, will update later
+              });
+            }
+          }
+        }
+        
+        // Namespace import: (import module from "module-path")
+        else if (expr.elements.length > 3 && 
+                isSymbol(expr.elements[1]) && 
+                isSymbol(expr.elements[2]) && expr.elements[2].name === 'from' && 
+                ((isString(expr.elements[3])) || 
+                 (isLiteral(expr.elements[3]) && 
+                  expr.elements[3].type === "literal" && 
+                  typeof expr.elements[3].value === 'string'))) {
+          
+          const namespaceName = expr.elements[1].name;
+          const modulePath = isString(expr.elements[3]) ? 
+            expr.elements[3].value : 
+            String((expr.elements[3].type === "literal" ? expr.elements[3].value : ""));
+          
+          // Add namespace as a module
+          addImportedSymbol(uri, {
+            name: namespaceName,
+            sourceName: '*',
+            sourceModule: modulePath,
+            kind: SymbolKind.Module
+          });
+          
+          // Try to find the module and extract its exports for better completions
+          try {
+            const workspaceFolders = await connection.workspace.getWorkspaceFolders();
+            if (!workspaceFolders) continue;
+            
+            const rootUri = workspaceFolders[0].uri;
+            const rootPath = rootUri.replace('file://', '');
+            
+            const resolvedPath = path.resolve(
+              rootPath, 
+              modulePath.replace(/^\.\//, '')
+            );
+            
+            if (resolvedPath.endsWith('.hql')) {
+              // Load and parse the module
+              const moduleText = fs.readFileSync(resolvedPath, 'utf8');
+              
+              // Get the symbols from the module
+              const moduleSymbols = extractModuleSymbols(moduleText);
+              
+              // Add them as properties of the namespace
+              for (const symbol of moduleSymbols) {
+                addImportedSymbol(uri, {
+                  name: `${namespaceName}.${symbol.name}`,
+                  sourceName: symbol.name,
+                  sourceModule: modulePath,
+                  kind: symbol.kind
+                });
+              }
+            }
+          } catch (error) {
+            console.error(`Error processing module exports: ${error}`);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`Error updating imported symbols: ${error}`);
+  }
+}
+
+/**
+ * Add an imported symbol to the tracking map
+ */
+function addImportedSymbol(uri: string, symbol: ImportedSymbol): void {
+  if (!importedSymbols.has(uri)) {
+    importedSymbols.set(uri, []);
+  }
+  importedSymbols.get(uri)!.push(symbol);
+}
+
+/**
+ * Extract symbols from a module (focusing on enums for now)
+ */
+function extractModuleSymbols(moduleText: string): { name: string, kind: SymbolKind }[] {
+  const result: { name: string, kind: SymbolKind }[] = [];
+  
+  try {
+    // Parse the module
+    const expressions = parse(moduleText);
+    
+    // Look for enum definitions and other symbols
+    for (const expr of expressions) {
+      if (isList(expr) && expr.elements.length > 1 && 
+          isSymbol(expr.elements[0])) {
+        
+        // Enum definition: (enum TypeName ...)
+        if (expr.elements[0].name === 'enum' && 
+            isSymbol(expr.elements[1])) {
+          const enumName = expr.elements[1].name;
+          
+          // Add the enum itself
+          result.push({
+            name: enumName,
+            kind: SymbolKind.Enum
+          });
+          
+          // Add enum cases
+          for (let i = 2; i < expr.elements.length; i++) {
+            const elemI = expr.elements[i];
+            if (isList(elemI) && 
+                elemI.elements.length > 1 && 
+                isSymbol(elemI.elements[0]) && 
+                elemI.elements[0].name === 'case' &&
+                isSymbol(elemI.elements[1])) {
+              
+              const caseName = elemI.elements[1].name;
+              result.push({
+                name: `${enumName}.${caseName}`,
+                kind: SymbolKind.EnumMember
+              });
+            }
+          }
+        }
+        
+        // Function definition: (fn name ...)
+        else if ((expr.elements[0].name === 'fn' || 
+                 expr.elements[0].name === 'fx') && 
+                isSymbol(expr.elements[1])) {
+          const funcName = expr.elements[1].name;
+          result.push({
+            name: funcName,
+            kind: SymbolKind.Function
+          });
+        }
+        
+        // Variable definition: (let name value) or (var name value)
+        else if ((expr.elements[0].name === 'let' || 
+                 expr.elements[0].name === 'var') && 
+                isSymbol(expr.elements[1])) {
+          const varName = expr.elements[1].name;
+          result.push({
+            name: varName,
+            kind: SymbolKind.Variable
+          });
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`Error extracting module symbols: ${error}`);
+  }
+  
+  return result;
+}
+
+/**
+ * Helper function to update document symbols
+ */
 async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> {
   try {
     const text = textDocument.getText();
@@ -327,8 +586,291 @@ connection.onDocumentSymbol((params: DocumentSymbolParams): SymbolInformation[] 
   return documentSymbols.get(uri) || [];
 });
 
+/**
+ * Get file system completion items for a path
+ */
+async function getPathCompletionItems(
+  partialPath: string,
+  isImport: boolean
+): Promise<CompletionItem[]> {
+  const items: CompletionItem[] = [];
+  try {
+    // Normalize the path
+    let basePath = partialPath.replace(/^['"]/, '').replace(/['"]$/, '');
+    const isRelative = basePath.startsWith('./') || basePath.startsWith('../');
+    
+    // For absolute paths or non-relative imports, suggest standard modules
+    if (!isRelative) {
+      if (isImport) {
+        return [
+          { label: 'path', kind: CompletionItemKind.Module },
+          { label: 'fs', kind: CompletionItemKind.Module },
+          { label: 'express', kind: CompletionItemKind.Module },
+          { label: 'http', kind: CompletionItemKind.Module },
+          { label: 'util', kind: CompletionItemKind.Module },
+          { label: 'crypto', kind: CompletionItemKind.Module },
+          { label: 'events', kind: CompletionItemKind.Module },
+        ];
+      }
+      return items;
+    }
+    
+    // Handle relative paths
+    let dirPath = basePath;
+    let prefix = '';
+    
+    // If path ends with a partial filename, separate it to use as filter
+    const lastSlashIndex = basePath.lastIndexOf('/');
+    if (lastSlashIndex !== -1 && lastSlashIndex !== basePath.length - 1) {
+      dirPath = basePath.substring(0, lastSlashIndex + 1);
+      prefix = basePath.substring(lastSlashIndex + 1);
+    }
+    
+    // Create absolute path from workspace root
+    const workspaceFolders = await connection.workspace.getWorkspaceFolders();
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return items;
+    }
+    
+    const rootUri = workspaceFolders[0].uri;
+    const rootPath = rootUri.replace('file://', '');
+    
+    const dirToScan = dirPath ? 
+      path.resolve(rootPath, dirPath.replace(/^\.\//, '')) : 
+      rootPath;
+    
+    // Get entries in the directory
+    const entries = fs.readdirSync(dirToScan, { withFileTypes: true });
+    
+    for (const entry of entries) {
+      // Skip hidden files unless explicitly looking for them
+      if (entry.name.startsWith('.') && !prefix.startsWith('.')) {
+        continue;
+      }
+      
+      // Skip files that don't match the prefix
+      if (prefix && !entry.name.startsWith(prefix)) {
+        continue;
+      }
+      
+      if (entry.isDirectory()) {
+        items.push({
+          label: entry.name + '/',
+          kind: CompletionItemKind.Folder,
+          detail: 'Directory'
+        });
+      } else if (entry.isFile() && entry.name.endsWith('.hql')) {
+        items.push({
+          label: entry.name,
+          kind: CompletionItemKind.File,
+          detail: 'HQL File'
+        });
+      }
+    }
+  } catch (error) {
+    console.error(`Error getting path completion items: ${error}`);
+  }
+  
+  return items;
+}
+
+/**
+ * Extract exported symbols from a module
+ */
+function extractExportedSymbols(moduleText: string): string[] {
+  const exportedSymbols: string[] = [];
+  
+  try {
+    // Parse the module
+    const expressions = parse(moduleText);
+    
+    // Look for export statements
+    for (const expr of expressions) {
+      if (isList(expr) && expr.elements.length > 0 && 
+          isSymbol(expr.elements[0]) && expr.elements[0].name === 'export') {
+        
+        // Vector-based export: (export [symbol1, symbol2])
+        if (expr.elements.length > 1 && isList(expr.elements[1])) {
+          const exportList = expr.elements[1];
+          for (const elem of exportList.elements) {
+            if (isSymbol(elem)) {
+              exportedSymbols.push(elem.name);
+            }
+          }
+        }
+        // String-based export: (export "name" symbol)
+        else if (expr.elements.length > 2 && 
+                (isString(expr.elements[1]) || 
+                 (isLiteral(expr.elements[1]) && 
+                  expr.elements[1].type === "literal" && 
+                  typeof expr.elements[1].value === 'string')) && 
+                isSymbol(expr.elements[2])) {
+          const symbolName = expr.elements[2].name;
+          exportedSymbols.push(symbolName);
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`Error extracting exports: ${error}`);
+  }
+  
+  return exportedSymbols;
+}
+
+/**
+ * Extract symbols from a module that can be imported
+ */
+async function getImportableSymbols(modulePath: string): Promise<CompletionItem[]> {
+  const symbols: CompletionItem[] = [];
+  
+  try {
+    const workspaceFolders = await connection.workspace.getWorkspaceFolders();
+    if (!workspaceFolders) return symbols;
+    
+    const rootUri = workspaceFolders[0].uri;
+    const rootPath = rootUri.replace('file://', '');
+    
+    let resolvedPath = modulePath;
+    // Handle relative paths
+    if (modulePath.startsWith('./') || modulePath.startsWith('../')) {
+      resolvedPath = path.resolve(rootPath, modulePath);
+    }
+    
+    // Add .hql extension if needed
+    if (!resolvedPath.endsWith('.hql')) {
+      resolvedPath += '.hql';
+    }
+    
+    // Check if file exists
+    if (!fs.existsSync(resolvedPath)) {
+      return symbols;
+    }
+    
+    const moduleText = fs.readFileSync(resolvedPath, 'utf8');
+    
+    // Extract exports
+    const exports = extractExportedSymbols(moduleText);
+    
+    // Create completion items for exports
+    for (const symbolName of exports) {
+      symbols.push({
+        label: symbolName,
+        kind: CompletionItemKind.Value,
+        detail: `Exported from ${modulePath}`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Symbol \`${symbolName}\` exported from \`${modulePath}\``
+        }
+      });
+    }
+    
+    // Also suggest 'as' keyword for aliasing
+    if (exports.length > 0) {
+      symbols.push({
+        label: 'as',
+        kind: CompletionItemKind.Keyword,
+        detail: 'Import with alias',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Use `as` to import a symbol with a different name:\n\n```hql\n(import [original as alias] from "module")\n```'
+        }
+      });
+    }
+  } catch (error) {
+    console.error(`Error getting importable symbols: ${error}`);
+  }
+  
+  return symbols;
+}
+
+/**
+ * Extract function parameters from a function definition
+ */
+function extractFunctionParams(document: TextDocument, symbol: SymbolInformation): 
+  { params: { name: string, type?: string, defaultValue?: string }[] } | undefined {
+  try {
+    // Get the function definition text
+    const range = symbol.location.range;
+    const funcText = document.getText(range);
+    
+    // Parse the function definition
+    const funcExpr = parse(funcText)[0];
+    if (!isList(funcExpr) || !isSymbol(funcExpr.elements[0])) {
+      return undefined;
+    }
+    
+    const funcType = funcExpr.elements[0].name; // 'fn' or 'fx'
+    
+    // Find the parameter list
+    const paramList = funcExpr.elements.find((el, index) => 
+      index > 1 && isList(el)
+    );
+    
+    if (!paramList || !isList(paramList)) {
+      return undefined;
+    }
+    
+    // Extract parameters
+    const params: { name: string, type?: string, defaultValue?: string }[] = [];
+    
+    for (let i = 0; i < paramList.elements.length; i++) {
+      const paramElem = paramList.elements[i];
+      if (isSymbol(paramElem)) {
+        const paramName = paramElem.name;
+        
+        // Check if the next element is a type annotation
+        let type: string | undefined = undefined;
+        let defaultValue: string | undefined = undefined;
+        
+        // Check for type annotation (param: Type)
+        if (i + 2 < paramList.elements.length) {
+          const colonElem = paramList.elements[i+1];
+          const typeElem = paramList.elements[i+2];
+          
+          if (isSymbol(colonElem) && colonElem.name === ':' && isSymbol(typeElem)) {
+            type = typeElem.name;
+            i += 2; // Skip the ':' and type
+            
+            // Check for default value (param: Type = default)
+            if (i + 2 < paramList.elements.length) {
+              const equalsElem = paramList.elements[i+1];
+              
+              if (isSymbol(equalsElem) && equalsElem.name === '=') {
+                // Extract default value as string
+                defaultValue = sexpToString(paramList.elements[i+2]);
+                i += 2; // Skip the '=' and default value
+              }
+            }
+          }
+        }
+        // Check for default value without type (param = default)
+        else if (i + 2 < paramList.elements.length) {
+          const equalsElem = paramList.elements[i+1];
+          
+          if (isSymbol(equalsElem) && equalsElem.name === '=') {
+            // Extract default value as string
+            defaultValue = sexpToString(paramList.elements[i+2]);
+            i += 2; // Skip the '=' and default value
+          }
+        }
+        
+        params.push({
+          name: paramName,
+          type,
+          defaultValue
+        });
+      }
+    }
+    
+    return { params };
+  } catch (error) {
+    console.error(`Error extracting function parameters: ${error}`);
+    return undefined;
+  }
+}
+
 // Handler for completion requests
-connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] => {
+connection.onCompletion(async (params: TextDocumentPositionParams): Promise<CompletionItem[]> => {
   const document = documents.get(params.textDocument.uri);
   if (!document) {
     return [];
@@ -340,6 +882,60 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] =
   
   // Get all defined symbols for the current document
   const symbols = documentSymbols.get(document.uri) || [];
+  
+  // Get the current line up to the cursor position
+  const currentLine = document.getText({
+    start: { line: position.line, character: 0 },
+    end: position
+  });
+  
+  // Check if we're completing a path in an import statement
+  if (/\(\s*import\b.*\bfrom\s+(['"])[^'"]*$/.test(currentLine)) {
+    // Extract the partial path
+    const match = currentLine.match(/\bfrom\s+(['"])([^'"]*?)$/);
+    if (match) {
+      const quote = match[1];
+      const partialPath = match[2];
+      const pathCompletions = await getPathCompletionItems(partialPath, true);
+      
+      // Format the completions with quotes
+      return pathCompletions.map(item => ({
+        ...item,
+        label: item.label,
+        textEdit: TextEdit.replace(
+          Range.create(
+            position.line, 
+            position.character - partialPath.length,
+            position.line,
+            position.character
+          ),
+          item.label
+        ),
+        commitCharacters: ['/']
+      }));
+    }
+  }
+  
+  // Enhanced import vector completion
+  // Check if we're completing a symbol in an import vector
+  if (/\(\s*import\s+\[[^\]]*$/.test(currentLine)) {
+    // Check if we have a module path in the import
+    const moduleMatch = currentLine.match(/from\s+['"]([^'"]+)['"]/);
+    if (moduleMatch) {
+      const modulePath = moduleMatch[1];
+      return await getImportableSymbols(modulePath);
+    }
+    
+    // If we're just starting the import list, suggest common imports
+    return [
+      { label: 'path', kind: CompletionItemKind.Module, detail: 'Node.js path module' },
+      { label: 'fs', kind: CompletionItemKind.Module, detail: 'Node.js file system module' },
+      { label: 'util', kind: CompletionItemKind.Module, detail: 'Node.js utilities module' },
+      { label: 'http', kind: CompletionItemKind.Module, detail: 'Node.js HTTP module' },
+      { label: 'express', kind: CompletionItemKind.Module, detail: 'Web framework' },
+      // Add more common modules
+    ];
+  }
   
   // Prepare completion items
   let completionItems: CompletionItem[] = [];
@@ -361,128 +957,349 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] =
     });
   }
   
-  // Check if we're in a form that requires special handling
-  if (currentExp && isList(currentExp) && currentExp.elements.length > 0) {
-    const firstElement = currentExp.elements[0];
-    
-    // If we're in an import form, suggest module names
-    if (isSymbol(firstElement) && firstElement.name === 'import') {
-      // Here you could add module names from your project
-      completionItems = completionItems.concat([
-        { label: 'path', kind: CompletionItemKind.Module },
-        { label: 'fs', kind: CompletionItemKind.Module },
-        { label: 'express', kind: CompletionItemKind.Module },
-        // Add more module names as needed
-      ]);
+  // Add imported symbols to completion list
+  const docImports = importedSymbols.get(document.uri) || [];
+  
+  // Add items from imported modules to completion
+  for (const imported of docImports) {
+    // Don't include namespace members in general completions
+    if (imported.name.includes('.')) {
+      continue;
     }
     
-    // If we're in a method chain, suggest methods
-    if (isSymbol(firstElement) && 
-        firstElement.name.startsWith('.') && 
-        currentExp.elements.length >= 2) {
-      // Add method suggestions based on context
-      // For example, if we detect we're working with an array
-      completionItems = completionItems.concat([
-        { label: 'map', kind: CompletionItemKind.Method },
-        { label: 'filter', kind: CompletionItemKind.Method },
-        { label: 'reduce', kind: CompletionItemKind.Method },
-        { label: 'forEach', kind: CompletionItemKind.Method },
-        { label: 'push', kind: CompletionItemKind.Method },
-        { label: 'pop', kind: CompletionItemKind.Method }
-      ]);
+    let kindMapping: CompletionItemKind = CompletionItemKind.Variable;
+    switch (imported.kind) {
+      case SymbolKind.Function:
+        kindMapping = CompletionItemKind.Function as CompletionItemKind;
+        break;
+      case SymbolKind.Class:
+        kindMapping = CompletionItemKind.Class as CompletionItemKind;
+        break;
+      case SymbolKind.Enum:
+        kindMapping = CompletionItemKind.Enum as CompletionItemKind;
+        break;
+      case SymbolKind.EnumMember:
+        kindMapping = CompletionItemKind.EnumMember as CompletionItemKind;
+        break;
+      case SymbolKind.Module:
+        kindMapping = CompletionItemKind.Module as CompletionItemKind;
+        break;
     }
     
-    // Suggest types after a colon in parameter lists
-    if (isSymbol(firstElement) && 
-        (firstElement.name === 'fn' || firstElement.name === 'fx') &&
-        document.getText().substring(document.offsetAt(position) - 1, document.offsetAt(position)) === ':') {
-      // Add type suggestions
-      completionItems = [
-        { label: 'Int', kind: CompletionItemKind.TypeParameter },
-        { label: 'Float', kind: CompletionItemKind.TypeParameter },
-        { label: 'Double', kind: CompletionItemKind.TypeParameter },
-        { label: 'String', kind: CompletionItemKind.TypeParameter },
-        { label: 'Boolean', kind: CompletionItemKind.TypeParameter },
-        { label: 'Bool', kind: CompletionItemKind.TypeParameter },
-        { label: '[Int]', kind: CompletionItemKind.TypeParameter, detail: 'Array of integers' },
-        { label: '[String]', kind: CompletionItemKind.TypeParameter, detail: 'Array of strings' },
-        { label: 'Any', kind: CompletionItemKind.TypeParameter }
-      ];
+    completionItems.push({
+      label: imported.name,
+      kind: kindMapping,
+      detail: `Imported from "${imported.sourceModule}"`,
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: `Imported as \`${imported.name}\` from \`${imported.sourceModule}\``
+      }
+    });
+  }
+  
+  // Enhanced enum completion
+  // Check if we're accessing an enum via dot notation
+  const dotMatch = currentLine.match(/(\w+)\.\s*$/);
+  if (dotMatch) {
+    const enumName = dotMatch[1];
+    
+    // Find if the symbol is an enum
+    const enumSymbol = symbols.find(s => 
+      s.kind === SymbolKind.Enum && 
+      s.name === enumName
+    );
+    
+    if (enumSymbol) {
+      // Find all enum cases for this enum
+      const enumCases = symbols.filter(s => 
+        s.kind === SymbolKind.EnumMember && 
+        s.name.startsWith(`${enumName}.`)
+      );
+      
+      // Return the enum cases as completion items
+      return enumCases.map(enumCase => {
+        const caseName = enumCase.name.substring(enumName.length + 1);
+        return {
+          label: caseName,
+          kind: CompletionItemKind.EnumMember,
+          detail: `Case of ${enumName}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `\`${enumName}.${caseName}\` - Enum case from \`${enumName}\``
+          }
+        };
+      });
+    }
+    
+    // Check for imported enums as well
+    const importedEnum = docImports.find(imp => 
+      imp.kind === SymbolKind.Enum && 
+      imp.name === enumName
+    );
+
+    if (importedEnum) {
+      // Find associated enum cases
+      const enumCases = docImports.filter(imp => 
+        imp.kind === SymbolKind.EnumMember && 
+        imp.name.startsWith(`${enumName}.`)
+      );
+      
+      // Return the enum cases as completion items
+      return enumCases.map(enumCase => {
+        const caseName = enumCase.name.substring(enumName.length + 1);
+        return {
+          label: caseName,
+          kind: CompletionItemKind.EnumMember,
+          detail: `Case of ${enumName} (imported)`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `\`${enumName}.${caseName}\` - Enum case from imported enum \`${enumName}\``
+          }
+        };
+      });
     }
   }
   
-  // If we are after a dot, suggest methods/properties based on context
-  const linePrefix = document.getText({
-    start: { line: position.line, character: 0 },
-    end: position
-  });
-  
-  if (linePrefix.endsWith('.')) {
-    // Try to determine the object type from the prefix
-    const prefixWithoutDot = linePrefix.slice(0, -1).trim();
+  // Check if we're accessing an imported namespace
+  const namespaceMatch = currentLine.match(/(\w+)\.\s*$/);
+  if (namespaceMatch) {
+    const namespaceName = namespaceMatch[1];
     
-    // Add contextual suggestions based on what we know
-    if (/array|numbers|items|list/i.test(prefixWithoutDot)) {
-      // Array methods
-      completionItems = [
-        { label: 'map', kind: CompletionItemKind.Method },
-        { label: 'filter', kind: CompletionItemKind.Method },
-        { label: 'reduce', kind: CompletionItemKind.Method },
-        { label: 'forEach', kind: CompletionItemKind.Method },
-        { label: 'push', kind: CompletionItemKind.Method },
-        { label: 'pop', kind: CompletionItemKind.Method },
-        { label: 'length', kind: CompletionItemKind.Property }
-      ];
-    } else if (/string|str|text/i.test(prefixWithoutDot)) {
-      // String methods
-      completionItems = [
-        { label: 'length', kind: CompletionItemKind.Property },
-        { label: 'toUpperCase', kind: CompletionItemKind.Method },
-        { label: 'toLowerCase', kind: CompletionItemKind.Method },
-        { label: 'trim', kind: CompletionItemKind.Method },
-        { label: 'split', kind: CompletionItemKind.Method },
-        { label: 'substring', kind: CompletionItemKind.Method }
-      ];
-    } else if (/console/i.test(prefixWithoutDot)) {
-      // Console methods
-      completionItems = [
-        { label: 'log', kind: CompletionItemKind.Method },
-        { label: 'error', kind: CompletionItemKind.Method },
-        { label: 'warn', kind: CompletionItemKind.Method },
-        { label: 'info', kind: CompletionItemKind.Method }
-      ];
-    } else if (/math/i.test(prefixWithoutDot)) {
-      // Math properties and methods
-      completionItems = [
-        { label: 'PI', kind: CompletionItemKind.Constant },
-        { label: 'E', kind: CompletionItemKind.Constant },
-        { label: 'abs', kind: CompletionItemKind.Method },
-        { label: 'max', kind: CompletionItemKind.Method },
-        { label: 'min', kind: CompletionItemKind.Method },
-        { label: 'random', kind: CompletionItemKind.Method },
-        { label: 'round', kind: CompletionItemKind.Method },
-        { label: 'floor', kind: CompletionItemKind.Method },
-        { label: 'ceil', kind: CompletionItemKind.Method }
-      ];
+    // Check if this is an imported namespace
+    const namespaceImport = docImports.find(imp => 
+      imp.kind === SymbolKind.Module &&
+      imp.name === namespaceName
+    );
+    
+    if (namespaceImport) {
+      // Find all namespace members
+      const members = docImports.filter(imp => 
+        imp.name.startsWith(`${namespaceName}.`)
+      );
+      
+      // Return the members as completion items
+      return members.map(member => {
+        const memberName = member.name.substring(namespaceName.length + 1);
+        let kindMapping: CompletionItemKind = CompletionItemKind.Variable;
+        
+        switch (member.kind) {
+          case SymbolKind.Function:
+            kindMapping = CompletionItemKind.Function as CompletionItemKind;
+            break;
+          case SymbolKind.Class:
+            kindMapping = CompletionItemKind.Class as CompletionItemKind;
+            break;
+          case SymbolKind.Enum:
+            kindMapping = CompletionItemKind.Enum as CompletionItemKind;
+            break;
+          case SymbolKind.EnumMember:
+            kindMapping = CompletionItemKind.EnumMember as CompletionItemKind;
+            break;
+        }
+        
+        return {
+          label: memberName,
+          kind: kindMapping,
+          detail: `Member of ${namespaceName} (imported from ${namespaceImport.sourceModule})`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `\`${namespaceName}.${memberName}\` - From module \`${namespaceImport.sourceModule}\``
+          }
+        };
+      });
+    }
+  }
+  
+  // Check if we're in a method chain after a dot
+  if (/\.\s*$/.test(currentLine)) {
+    // Try to infer the object type from the context
+    let objectType = '';
+    
+    // Simple type inference based on variable names
+    if (/(\w+)\.\s*$/.test(currentLine)) {
+      const varName = RegExp.$1.toLowerCase();
+      
+      if (/array|list|items|numbers|vectors?/.test(varName)) {
+        objectType = 'array';
+      } else if (/string|text|msg|message/.test(varName)) {
+        objectType = 'string';
+      } else if (/map|obj|object|config|settings/.test(varName)) {
+        objectType = 'object';
+      } else if (/date|time/.test(varName)) {
+        objectType = 'date';
+      } else if (/math/.test(varName)) {
+        objectType = 'math';
+      } else if (/console/.test(varName)) {
+        objectType = 'console';
+      } else if (/re(gex)?|pattern/.test(varName)) {
+        objectType = 'regexp';
+      }
     }
     
-    // Check if it's an enum by looking for defined symbols
-    for (const symbol of symbols) {
-      if (symbol.kind === SymbolKind.Enum && symbol.name === prefixWithoutDot) {
-        // Filter enum members for this enum
-        const enumMembers = symbols.filter(s => 
-          s.kind === SymbolKind.EnumMember && 
-          s.name.startsWith(`${prefixWithoutDot}.`)
-        );
+    // Provide completions based on inferred type
+    switch (objectType) {
+      case 'array':
+        return [
+          { label: 'map', kind: CompletionItemKind.Method, detail: 'Transforms each element' },
+          { label: 'filter', kind: CompletionItemKind.Method, detail: 'Filters elements by predicate' },
+          { label: 'reduce', kind: CompletionItemKind.Method, detail: 'Reduces array to a single value' },
+          { label: 'forEach', kind: CompletionItemKind.Method, detail: 'Executes function on each element' },
+          { label: 'find', kind: CompletionItemKind.Method, detail: 'Finds first matching element' },
+          { label: 'findIndex', kind: CompletionItemKind.Method, detail: 'Finds index of first matching element' },
+          { label: 'some', kind: CompletionItemKind.Method, detail: 'Tests if some element passes predicate' },
+          { label: 'every', kind: CompletionItemKind.Method, detail: 'Tests if all elements pass predicate' },
+          { label: 'slice', kind: CompletionItemKind.Method, detail: 'Returns a portion of the array' },
+          { label: 'concat', kind: CompletionItemKind.Method, detail: 'Concatenates arrays' },
+          { label: 'join', kind: CompletionItemKind.Method, detail: 'Joins elements into string' },
+          { label: 'length', kind: CompletionItemKind.Property, detail: 'Number of elements' },
+          { label: 'push', kind: CompletionItemKind.Method, detail: 'Adds element to end' },
+          { label: 'pop', kind: CompletionItemKind.Method, detail: 'Removes last element' },
+          { label: 'shift', kind: CompletionItemKind.Method, detail: 'Removes first element' },
+          { label: 'unshift', kind: CompletionItemKind.Method, detail: 'Adds element to beginning' }
+        ];
         
-        completionItems = enumMembers.map(member => {
-          const caseName = member.name.substring(prefixWithoutDot.length + 1);
-          return {
-            label: caseName,
-            kind: CompletionItemKind.EnumMember
-          };
-        });
-        break;
+      case 'string':
+        return [
+          { label: 'toLowerCase', kind: CompletionItemKind.Method, detail: 'Converts to lowercase' },
+          { label: 'toUpperCase', kind: CompletionItemKind.Method, detail: 'Converts to uppercase' },
+          { label: 'trim', kind: CompletionItemKind.Method, detail: 'Removes whitespace from ends' },
+          { label: 'substring', kind: CompletionItemKind.Method, detail: 'Returns portion of string' },
+          { label: 'substr', kind: CompletionItemKind.Method, detail: 'Returns characters from string' },
+          { label: 'split', kind: CompletionItemKind.Method, detail: 'Splits string into array' },
+          { label: 'replace', kind: CompletionItemKind.Method, detail: 'Replaces occurrences' },
+          { label: 'match', kind: CompletionItemKind.Method, detail: 'Matches against regexp' },
+          { label: 'indexOf', kind: CompletionItemKind.Method, detail: 'Finds position of substring' },
+          { label: 'lastIndexOf', kind: CompletionItemKind.Method, detail: 'Finds last position of substring' },
+          { label: 'startsWith', kind: CompletionItemKind.Method, detail: 'Tests if string starts with value' },
+          { label: 'endsWith', kind: CompletionItemKind.Method, detail: 'Tests if string ends with value' },
+          { label: 'includes', kind: CompletionItemKind.Method, detail: 'Tests if string contains value' },
+          { label: 'length', kind: CompletionItemKind.Property, detail: 'Number of characters' }
+        ];
+        
+      case 'math':
+        return [
+          { label: 'abs', kind: CompletionItemKind.Method, detail: 'Absolute value' },
+          { label: 'max', kind: CompletionItemKind.Method, detail: 'Maximum value' },
+          { label: 'min', kind: CompletionItemKind.Method, detail: 'Minimum value' },
+          { label: 'floor', kind: CompletionItemKind.Method, detail: 'Round down' },
+          { label: 'ceil', kind: CompletionItemKind.Method, detail: 'Round up' },
+          { label: 'round', kind: CompletionItemKind.Method, detail: 'Round to nearest integer' },
+          { label: 'random', kind: CompletionItemKind.Method, detail: 'Random number between 0 and 1' },
+          { label: 'sqrt', kind: CompletionItemKind.Method, detail: 'Square root' },
+          { label: 'pow', kind: CompletionItemKind.Method, detail: 'Power' },
+          { label: 'PI', kind: CompletionItemKind.Constant, detail: 'π constant' },
+          { label: 'E', kind: CompletionItemKind.Constant, detail: 'e constant' }
+        ];
+        
+      case 'console':
+        return [
+          { label: 'log', kind: CompletionItemKind.Method, detail: 'Log message' },
+          { label: 'error', kind: CompletionItemKind.Method, detail: 'Log error' },
+          { label: 'warn', kind: CompletionItemKind.Method, detail: 'Log warning' },
+          { label: 'info', kind: CompletionItemKind.Method, detail: 'Log info' },
+          { label: 'debug', kind: CompletionItemKind.Method, detail: 'Log debug message' },
+          { label: 'clear', kind: CompletionItemKind.Method, detail: 'Clear console' },
+          { label: 'time', kind: CompletionItemKind.Method, detail: 'Start timer' },
+          { label: 'timeEnd', kind: CompletionItemKind.Method, detail: 'End timer' },
+          { label: 'trace', kind: CompletionItemKind.Method, detail: 'Output stack trace' },
+          { label: 'table', kind: CompletionItemKind.Method, detail: 'Display tabular data' }
+        ];
+      
+      case 'object':
+        return [
+          { label: 'keys', kind: CompletionItemKind.Method, detail: 'Get object keys', documentation: 'Object.keys(obj)' },
+          { label: 'values', kind: CompletionItemKind.Method, detail: 'Get object values', documentation: 'Object.values(obj)' },
+          { label: 'entries', kind: CompletionItemKind.Method, detail: 'Get object entries', documentation: 'Object.entries(obj)' },
+          { label: 'hasOwnProperty', kind: CompletionItemKind.Method, detail: 'Check if property exists' },
+          { label: 'toString', kind: CompletionItemKind.Method, detail: 'Convert to string' },
+          { label: 'valueOf', kind: CompletionItemKind.Method, detail: 'Get primitive value' }
+        ];
+      
+      case 'date':
+        return [
+          { label: 'getFullYear', kind: CompletionItemKind.Method, detail: 'Get year (4 digits)' },
+          { label: 'getMonth', kind: CompletionItemKind.Method, detail: 'Get month (0-11)' },
+          { label: 'getDate', kind: CompletionItemKind.Method, detail: 'Get day of month (1-31)' },
+          { label: 'getDay', kind: CompletionItemKind.Method, detail: 'Get day of week (0-6)' },
+          { label: 'getHours', kind: CompletionItemKind.Method, detail: 'Get hour (0-23)' },
+          { label: 'getMinutes', kind: CompletionItemKind.Method, detail: 'Get minutes (0-59)' },
+          { label: 'getSeconds', kind: CompletionItemKind.Method, detail: 'Get seconds (0-59)' },
+          { label: 'getTime', kind: CompletionItemKind.Method, detail: 'Get timestamp (milliseconds)' },
+          { label: 'toISOString', kind: CompletionItemKind.Method, detail: 'Convert to ISO string' },
+          { label: 'toLocaleDateString', kind: CompletionItemKind.Method, detail: 'Convert to localized date string' },
+          { label: 'toLocaleTimeString', kind: CompletionItemKind.Method, detail: 'Convert to localized time string' }
+        ];
+      
+      case 'regexp':
+        return [
+          { label: 'test', kind: CompletionItemKind.Method, detail: 'Test if pattern matches string' },
+          { label: 'exec', kind: CompletionItemKind.Method, detail: 'Execute search for match' },
+          { label: 'source', kind: CompletionItemKind.Property, detail: 'Pattern text' },
+          { label: 'flags', kind: CompletionItemKind.Property, detail: 'Flags (g, i, m, etc)' },
+          { label: 'lastIndex', kind: CompletionItemKind.Property, detail: 'Index of next match' }
+        ];
+        
+      default:
+        // Generic object methods
+        return [
+          { label: 'toString', kind: CompletionItemKind.Method, detail: 'Convert to string' },
+          { label: 'valueOf', kind: CompletionItemKind.Method, detail: 'Get primitive value' }
+        ];
+    }
+  }
+  
+  // Check if we're in a function call after a parameter name (e.g., "x:")
+  const paramMatch = currentLine.match(/\([^()]*\b(\w+)\s*:\s*$/);
+  if (paramMatch) {
+    const paramName = paramMatch[1];
+    
+    // Try to determine the function being called
+    const funcCallMatch = currentLine.match(/\(\s*(\w+)/);
+    if (funcCallMatch) {
+      const funcName = funcCallMatch[1];
+      
+      // Look for the function in document symbols
+      const funcSymbol = symbols.find(s => 
+        s.kind === SymbolKind.Function && 
+        s.name === funcName
+      );
+      
+      if (funcSymbol) {
+        // Try to extract parameter info from function definition
+        const funcDefInfo = extractFunctionParams(document, funcSymbol);
+        if (funcDefInfo && funcDefInfo.params) {
+          // Filter parameters matching the current one
+          const matchingParams = funcDefInfo.params.filter(p => 
+            p.name.toLowerCase().includes(paramName.toLowerCase())
+          );
+          
+          if (matchingParams.length > 0) {
+            return matchingParams.map(p => ({
+              label: p.name,
+              kind: CompletionItemKind.Variable,
+              detail: p.type ? `Parameter: ${p.name}: ${p.type}` : `Parameter: ${p.name}`,
+              documentation: p.defaultValue 
+                ? {
+                    kind: MarkupKind.Markdown,
+                    value: `Parameter with default value: \`${p.defaultValue}\``
+                  }
+                : undefined
+            }));
+          }
+        }
+      }
+      
+      // If no specific parameters found, offer generic completions based on function name
+      if (funcName === 'add' || funcName === 'sum') {
+        return [
+          { label: 'x', kind: CompletionItemKind.Variable, detail: 'First operand' },
+          { label: 'y', kind: CompletionItemKind.Variable, detail: 'Second operand' }
+        ];
+      } else if (funcName === 'map' || funcName === 'filter') {
+        return [
+          { label: 'fn', kind: CompletionItemKind.Variable, detail: 'Function to apply' },
+          { label: 'coll', kind: CompletionItemKind.Variable, detail: 'Collection to operate on' }
+        ];
       }
     }
   }
@@ -599,6 +1416,20 @@ connection.onHover(({ textDocument, position }) => {
         }
       }
       
+      // Check if it's an imported symbol
+      const docImports = importedSymbols.get(document.uri) || [];
+      const importedSymbol = docImports.find(imp => imp.name === word);
+      
+      if (importedSymbol) {
+        return {
+          contents: {
+            kind: MarkupKind.Markdown,
+            value: `**Imported Symbol** \`${word}\`\n\nImported from: \`${importedSymbol.sourceModule}\``
+          },
+          range: wordRange
+        };
+      }
+      
       // Provide basic info for common functions/keywords
       if (word === 'if') {
         return {
@@ -678,7 +1509,7 @@ function getWordRangeAtPosition(document: TextDocument, position: Position): Ran
 }
 
 // Handler for go to definition
-connection.onDefinition((params): Definition | null => {
+connection.onDefinition(async (params): Promise<Definition | null> => {
   const document = documents.get(params.textDocument.uri);
   if (!document) {
     return null;
@@ -698,6 +1529,40 @@ connection.onDefinition((params): Definition | null => {
     for (const symbol of symbols) {
       if (symbol.name === word || symbol.name.endsWith(`.${word}`)) {
         return symbol.location;
+      }
+    }
+    
+    // Check in imported symbols
+    const docImports = importedSymbols.get(document.uri) || [];
+    const importedSymbol = docImports.find(imp => imp.name === word);
+    
+    if (importedSymbol) {
+      // Try to find the original definition in the imported module
+      try {
+        const workspaceFolders = await connection.workspace.getWorkspaceFolders();
+        if (!workspaceFolders) return null;
+        
+        const rootUri = workspaceFolders[0].uri;
+        const rootPath = rootUri.replace('file://', '');
+        
+        let modulePath = importedSymbol.sourceModule;
+        // Handle relative paths
+        if (modulePath.startsWith('./') || modulePath.startsWith('../')) {
+          modulePath = path.resolve(rootPath, modulePath);
+        }
+        
+        // Add .hql extension if needed
+        if (!modulePath.endsWith('.hql')) {
+          modulePath += '.hql';
+        }
+        
+        // Add file:// prefix
+        const moduleUri = `file://${modulePath}`;
+        
+        // Return a location in the imported module
+        return Location.create(moduleUri, Range.create(0, 0, 0, 0));
+      } catch (error) {
+        console.error(`Error resolving imported definition: ${error}`);
       }
     }
     
@@ -739,6 +1604,42 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
         });
       }
       
+      // Check for undefined symbols in the document
+      const definedSymbols = new Set<string>();
+      const usedSymbols = new Set<string>();
+      const importedSymbolsList = importedSymbols.get(textDocument.uri) || [];
+      const importedNames = new Set(importedSymbolsList.map(s => s.name));
+      
+      for (const symbol of documentSymbols.get(textDocument.uri) || []) {
+        definedSymbols.add(symbol.name);
+      }
+      
+      // Find symbol usages
+      for (const expr of expressions) {
+        if (isList(expr)) {
+          findSymbolUsagesInList(expr, usedSymbols);
+        }
+      }
+      
+      // Check for undefined symbols
+      for (const symbol of usedSymbols) {
+        if (!definedSymbols.has(symbol) && !importedNames.has(symbol) && !isBuiltInSymbol(symbol)) {
+          // Try to find the location of the symbol usage
+          const symbolPosition = findSymbolUsagePosition(text, symbol);
+          if (symbolPosition) {
+            diagnostics.push({
+              severity: DiagnosticSeverity.Warning,
+              range: {
+                start: symbolPosition,
+                end: { line: symbolPosition.line, character: symbolPosition.character + symbol.length }
+              },
+              message: `Undefined symbol: '${symbol}'`,
+              source: 'hql'
+            });
+          }
+        }
+      }
+      
     } catch (e) {
       // Parse error - add diagnostic
       if (e instanceof Error) {
@@ -777,6 +1678,85 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
   } catch (error) {
     console.error(`Error validating document: ${error}`);
   }
+}
+
+/**
+ * Find symbol usages in a list expression
+ */
+function findSymbolUsagesInList(list: SList, usedSymbols: Set<string>) {
+  for (const elem of list.elements) {
+    if (isSymbol(elem)) {
+      usedSymbols.add(elem.name);
+    } else if (isList(elem)) {
+      findSymbolUsagesInList(elem, usedSymbols);
+    }
+  }
+}
+
+/**
+ * Check if a symbol is a built-in HQL symbol
+ */
+function isBuiltInSymbol(symbolName: string): boolean {
+  // HQL built-in symbols
+  const builtIns = new Set([
+    'let', 'var', 'fn', 'fx', 'if', 'cond', 'when', 'unless', 'do', 'loop', 'recur',
+    'for', 'while', 'repeat', 'enum', 'class', 'struct', 'case', 'import', 'export',
+    'true', 'false', 'nil', '+', '-', '*', '/', '=', '!=', '<', '>', '<=', '>=',
+    'and', 'or', 'not', 'print', 'str', 'get', 'vector', 'hash-map', 'hash-set',
+    'empty-array', 'empty-map', 'empty-set', 'return', 'set!', 'defmacro', 'macro',
+    'lambda', 'quote', 'quasiquote', 'unquote', 'unquote-splicing', '->', 'as',
+    'from', 'console.log', 'Math', 'Object', 'Array', 'String', 'Number', 'Boolean',
+    'Date', 'RegExp', 'Error', 'Promise', 'Set', 'Map', 'JSON', 'parseInt', 'parseFloat'
+  ]);
+  
+  return builtIns.has(symbolName) || symbolName.startsWith('.') || 
+         /^[0-9]+$/.test(symbolName);
+}
+
+/**
+ * Find a symbol usage position in the document text
+ */
+function findSymbolUsagePosition(text: string, symbolName: string): Position | null {
+  const symbolPattern = new RegExp(`\\b${symbolName}\\b`, 'g');
+  let match;
+  
+  // Find all occurrences to get line/column info
+  let lineCount = 0;
+  let lastLineStart = 0;
+  let lines: number[] = [0];
+  
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') {
+      lineCount++;
+      lastLineStart = i + 1;
+      lines.push(lastLineStart);
+    }
+  }
+  
+  // Reset regex lastIndex
+  symbolPattern.lastIndex = 0;
+  
+  // Find a match and convert offset to line/column
+  while ((match = symbolPattern.exec(text)) !== null) {
+    const offset = match.index;
+    
+    // Find the line number
+    let line = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (offset >= lines[i]) {
+        line = i;
+      } else {
+        break;
+      }
+    }
+    
+    // Calculate column
+    const column = offset - lines[line];
+    
+    return { line, character: column };
+  }
+  
+  return null;
 }
 
 // Handler for semantic tokens
@@ -992,5 +1972,20 @@ function createRange(startLine: number, startChar: number, endLine: number, endC
   );
 }
 
+// Check if an expression is a literal
+function isLiteral(exp: SExp): boolean {
+  return exp.type === "literal";
+}
+
 // Start the language server
 connection.listen();
+
+/**
+ * Helper function to check if an expression has a string value
+ */
+function hasStringValue(exp: SExp): boolean {
+  return (isString(exp) || 
+         (isLiteral(exp) && 
+          exp.type === "literal" && 
+          typeof exp.value === 'string'));
+}

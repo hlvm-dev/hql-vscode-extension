@@ -258,8 +258,7 @@ export function getParentExpression(document: ITextDocument, position: Position)
 }
 
 /**
- * Gets the range of the current expression under the cursor
- * Works with both VS Code and LSP TextDocument types
+ * Enhanced version that handles all edge cases of HQL expression evaluation
  */
 export function getExpressionRange(document: any, position: any): Range {
   // Adapt the document to our common interface
@@ -273,6 +272,49 @@ export function getExpressionRange(document: any, position: any): Range {
     lspPosition = Position.create(position._line, position._character);
   }
   
+  const text = adaptedDoc.getText();
+  const offset = adaptedDoc.offsetAt(lspPosition);
+  
+  // Handle the case where the cursor is on a delimiter
+  if (offset < text.length && '([{)]}'.includes(text[offset])) {
+    const delimiterPosition = lspPosition;
+    
+    // If cursor is on an opening delimiter, find the matching closing
+    if ('([{'.includes(text[offset])) {
+      const openDelim = text[offset];
+      const closeDelim = getMatchingDelimiter(openDelim);
+      const pair = findMatchingDelimiterPair(text, offset, openDelim, closeDelim, 1);
+      
+      if (pair.endPos !== -1) {
+        const endPosition = adaptedDoc.positionAt(pair.endPos + 1);
+        return Range.create(delimiterPosition, endPosition);
+      }
+    }
+    // If cursor is on a closing delimiter, find the matching opening
+    else if (')]}'.includes(text[offset])) {
+      const closeDelim = text[offset];
+      const openDelim = getMatchingDelimiter(closeDelim);
+      const pair = findMatchingDelimiterPair(text, offset, closeDelim, openDelim, -1);
+      
+      if (pair.startPos !== -1) {
+        const startPosition = adaptedDoc.positionAt(pair.startPos);
+        const endPosition = adaptedDoc.positionAt(offset + 1);
+        return Range.create(startPosition, endPosition);
+      }
+    }
+  }
+  
+  // Handle the case where the cursor is inside an expression
+  // This is a more robust implementation that handles nested expressions correctly
+  const containingExpression = findContainingExpression(text, offset);
+  if (containingExpression) {
+    const startPosition = adaptedDoc.positionAt(containingExpression.start);
+    const endPosition = adaptedDoc.positionAt(containingExpression.end + 1);
+    return Range.create(startPosition, endPosition);
+  }
+  
+  // Check for top-level expressions
+  const expressions = parse(text);
   const expression = getCurrentExpression(adaptedDoc, lspPosition);
   if (expression) {
     return findExpressionRange(adaptedDoc, expression);
@@ -283,8 +325,130 @@ export function getExpressionRange(document: any, position: any): Range {
 }
 
 /**
- * Gets the range of the outermost expression containing the cursor position
- * Works with both VS Code and LSP TextDocument types
+ * Get the matching delimiter for a given delimiter
+ */
+function getMatchingDelimiter(delimiter: string): string {
+  switch (delimiter) {
+    case '(': return ')';
+    case ')': return '(';
+    case '[': return ']';
+    case ']': return '[';
+    case '{': return '}';
+    case '}': return '{';
+    default: return '';
+  }
+}
+
+/**
+ * Find matching delimiter pair positions in text
+ */
+function findMatchingDelimiterPair(
+  text: string, 
+  startOffset: number, 
+  startDelim: string, 
+  endDelim: string, 
+  direction: 1 | -1
+): { startPos: number, endPos: number } {
+  let pos = startOffset;
+  let depth = 1;
+  let startPos = -1;
+  let endPos = -1;
+  
+  if (direction === 1) {
+    // Forward search for closing delimiter
+    startPos = startOffset;
+    for (let i = startOffset + 1; i < text.length; i++) {
+      if (text[i] === startDelim) {
+        depth++;
+      } else if (text[i] === endDelim) {
+        depth--;
+        if (depth === 0) {
+          endPos = i;
+          break;
+        }
+      }
+    }
+  } else {
+    // Backward search for opening delimiter
+    endPos = startOffset;
+    for (let i = startOffset - 1; i >= 0; i--) {
+      if (text[i] === startDelim) {
+        depth++;
+      } else if (text[i] === endDelim) {
+        depth--;
+        if (depth === 0) {
+          startPos = i;
+          break;
+        }
+      }
+    }
+  }
+  
+  return { startPos, endPos };
+}
+
+/**
+ * Find the start and end of an expression containing the given offset
+ */
+function findContainingExpression(
+  text: string, 
+  offset: number
+): { start: number, end: number } | null {
+  // Find the opening delimiter before the current position
+  let openDelims = [];
+  let closeDelims = [];
+  
+  for (let i = 0; i < text.length; i++) {
+    if ('([{'.includes(text[i])) {
+      openDelims.push(i);
+    } else if (')]}'.includes(text[i])) {
+      if (openDelims.length > 0) {
+        const openPos = openDelims.pop();
+        
+        // If this pair contains our offset, we've found the containing expression
+        if (openPos !== undefined && openPos < offset && i >= offset) {
+          return { start: openPos, end: i };
+        }
+        
+        // If we've removed matched pairs and the offset is between open and closing
+        // delimiters, look for the innermost pair
+        if (openDelims.length > 0 && openDelims[openDelims.length - 1] < offset && i >= offset) {
+          return { start: openDelims[openDelims.length - 1], end: i };
+        }
+      }
+    }
+  }
+  
+  // Simple scan for the innermost expression containing the offset
+  let innerStart = -1;
+  let innerEnd = -1;
+  let depth = 0;
+  
+  for (let i = 0; i < text.length; i++) {
+    if ('([{'.includes(text[i])) {
+      if (i < offset && (innerStart === -1 || i > innerStart)) {
+        innerStart = i;
+      }
+      depth++;
+    } else if (')]}'.includes(text[i])) {
+      depth--;
+      if (depth === 0 && innerStart !== -1 && i >= offset) {
+        innerEnd = i;
+        break;
+      }
+    }
+  }
+  
+  if (innerStart !== -1 && innerEnd !== -1) {
+    return { start: innerStart, end: innerEnd };
+  }
+  
+  return null;
+}
+
+/**
+ * Gets the outermost expression containing the cursor position
+ * Enhanced version for all edge cases
  */
 export function getOutermostExpressionRange(document: any, position: any): Range {
   // Adapt the document to our common interface
@@ -300,20 +464,96 @@ export function getOutermostExpressionRange(document: any, position: any): Range
   
   try {
     const text = adaptedDoc.getText();
+    const offset = adaptedDoc.offsetAt(lspPosition);
+    
+    // Find the outermost expression containing this position
     const expressions = parse(text);
     
-    // Find the outermost expression that contains the cursor position
-    for (const exp of expressions) {
-      const range = findExpressionRange(adaptedDoc, exp);
-      if (containsPosition(range, lspPosition)) {
+    // Analyze all top-level expressions to find the one containing the position
+    for (const expr of expressions) {
+      const range = findExpressionRange(adaptedDoc, expr);
+      
+      if (isPositionInRange(lspPosition, range)) {
         return range;
       }
     }
     
-    // If no expression is found, return a range around the cursor position
-    return Range.create(lspPosition, lspPosition);
+    // If no top-level expression contains the position, try to find any containing expression
+    // This handles incomplete expressions not yet parseable
+    const containingExpr = findContainingExpression(text, offset);
+    if (containingExpr) {
+      return Range.create(
+        adaptedDoc.positionAt(containingExpr.start),
+        adaptedDoc.positionAt(containingExpr.end + 1)
+      );
+    }
+    
+    // If still no expression found, use more aggressive form detection
+    return findExpressionByDelimiters(text, offset, adaptedDoc);
+    
   } catch (e) {
     console.error('Error getting outermost expression range:', e);
     return Range.create(lspPosition, lspPosition);
   }
+}
+
+/**
+ * Fall back to delimiters-only expression detection
+ */
+function findExpressionByDelimiters(text: string, offset: number, adaptedDoc: ITextDocument): Range {
+  // Find the nearest opening delimiter before the cursor
+  let openPos = -1;
+  for (let i = offset; i >= 0; i--) {
+    if ('([{'.includes(text[i])) {
+      openPos = i;
+      break;
+    }
+  }
+  
+  // Find the matching closing delimiter
+  if (openPos !== -1) {
+    const openChar = text[openPos];
+    const closeChar = getMatchingDelimiter(openChar);
+    let depth = 1;
+    
+    for (let i = openPos + 1; i < text.length; i++) {
+      if (text[i] === openChar) {
+        depth++;
+      } else if (text[i] === closeChar) {
+        depth--;
+        if (depth === 0) {
+          // Found matching pair
+          return Range.create(
+            adaptedDoc.positionAt(openPos),
+            adaptedDoc.positionAt(i + 1)
+          );
+        }
+      }
+    }
+  }
+  
+  // If still no expression, return a range around the cursor
+  return Range.create(
+    adaptedDoc.positionAt(offset),
+    adaptedDoc.positionAt(offset)
+  );
+}
+
+/**
+ * Check if a position is contained within a range
+ */
+function isPositionInRange(position: Position, range: Range): boolean {
+  if (position.line < range.start.line || position.line > range.end.line) {
+    return false;
+  }
+  
+  if (position.line === range.start.line && position.character < range.start.character) {
+    return false;
+  }
+  
+  if (position.line === range.end.line && position.character > range.end.character) {
+    return false;
+  }
+  
+  return true;
 }
