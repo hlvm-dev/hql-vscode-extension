@@ -1,0 +1,1 @@
+;; (console.log (js-format-text2 "defmacro-import JS working1!")) ;; error => X

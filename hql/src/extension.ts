@@ -18,6 +18,7 @@ const logger = new Logger(true);
 
 let client: LanguageClient;
 let statusBarItem: vscode.StatusBarItem;
+let outputChannel: vscode.OutputChannel;
 
 /**
  * Update the REPL server status in the status bar
@@ -43,6 +44,12 @@ async function updateServerStatus() {
 export function activate(context: vscode.ExtensionContext) {
   logger.info("Activating HQL extension");
   
+  // Create output channel
+  outputChannel = vscode.window.createOutputChannel("HQL Language Server");
+  context.subscriptions.push(outputChannel);
+  outputChannel.show();
+  outputChannel.appendLine("HQL Language Server starting...");
+  
   // Initialize UI manager
   ui.initialize(context);
   
@@ -58,9 +65,30 @@ export function activate(context: vscode.ExtensionContext) {
   const fs = require('fs');
   if (!fs.existsSync(serverModule)) {
     logger.error(`Server module not found at: ${serverModule}`);
+    outputChannel.appendLine(`ERROR: Server module not found at: ${serverModule}`);
     vscode.window.showErrorMessage(`HQL Language Server module not found: ${serverModule}`);
+    
+    // Check if the out directory exists
+    const outDir = context.asAbsolutePath("out");
+    if (!fs.existsSync(outDir)) {
+      outputChannel.appendLine(`ERROR: Out directory does not exist: ${outDir}`);
+      vscode.window.showErrorMessage("The 'out' directory doesn't exist. Please compile the extension with 'tsc -p ./'");
+    } else {
+      // List files in out directory
+      outputChannel.appendLine(`Out directory exists at: ${outDir}`);
+      const files = fs.readdirSync(outDir);
+      outputChannel.appendLine(`Files in out directory: ${files.join(', ')}`);
+    }
   } else {
     logger.info(`Server module found at: ${serverModule}`);
+    outputChannel.appendLine(`Server module found at: ${serverModule}`);
+    
+    // Check if the file size is reasonable (not empty)
+    const stats = fs.statSync(serverModule);
+    outputChannel.appendLine(`Server module size: ${stats.size} bytes`);
+    if (stats.size < 100) {
+      outputChannel.appendLine("WARNING: Server module file is suspiciously small!");
+    }
   }
   
   const serverOptions: ServerOptions = {
@@ -77,19 +105,20 @@ export function activate(context: vscode.ExtensionContext) {
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher("**/*.hql")
     },
-    outputChannelName: "HQL Language Server",
+    outputChannel,
     revealOutputChannelOn: 4, // Show on error
     middleware: {
       // Add middleware for better completion handling
       provideCompletionItem: (document, position, context, token, next) => {
         // Log completion requests to aid debugging
-        logger.debug(`Completion requested at ${position.line}:${position.character}`);
+        outputChannel.appendLine(`Completion requested at ${position.line}:${position.character}`);
         return next(document, position, context, token);
       }
     }
   };
   
   try {
+    outputChannel.appendLine("Creating language client...");
     client = new LanguageClient("hqlLanguageServer", "HQL Language Server", serverOptions, clientOptions);
     
     // Start the client, which also starts the server
@@ -97,20 +126,24 @@ export function activate(context: vscode.ExtensionContext) {
     
     // Update UI status to starting
     ui.updateLspStatus("Starting");
+    outputChannel.appendLine("Starting language client...");
     
     // Start client with promise handling
     const startPromise = client.start();
     startPromise.then(() => {
       logger.info("Language server started successfully!");
+      outputChannel.appendLine("Language server started successfully!");
       ui.updateLspStatus("Running");
       vscode.window.showInformationMessage("HQL Language Server started successfully");
     }).catch(error => {
       logger.error(`Failed to start language server: ${error}`);
+      outputChannel.appendLine(`ERROR: Failed to start language server: ${error}`);
       ui.updateLspStatus("Failed", false);
       vscode.window.showErrorMessage(`HQL Language Server failed to start: ${error}`);
     });
   } catch (error) {
     logger.error(`Error setting up language client: ${error}`);
+    outputChannel.appendLine(`ERROR: Error setting up language client: ${error}`);
     ui.updateLspStatus("Setup Error", false);
     vscode.window.showErrorMessage(`HQL Language Server setup error: ${error}`);
   }
@@ -218,6 +251,46 @@ export function activate(context: vscode.ExtensionContext) {
       });
     })
   );
+  
+  // Add a diagnostic command
+  context.subscriptions.push(vscode.commands.registerCommand(
+    "hql.checkLsp",
+    () => {
+      outputChannel.show(true); // Force show the output channel
+      outputChannel.appendLine("--- HQL Language Server Diagnostics ---");
+      
+      // Check if server module exists
+      const fs = require('fs');
+      const serverModule = context.asAbsolutePath(path.join("out", "lspServer.js"));
+      outputChannel.appendLine(`Server module path: ${serverModule}`);
+      outputChannel.appendLine(`Server module exists: ${fs.existsSync(serverModule)}`);
+      
+      // Check output directory contents
+      const outDir = context.asAbsolutePath("out");
+      outputChannel.appendLine(`Out directory exists: ${fs.existsSync(outDir)}`);
+      if (fs.existsSync(outDir)) {
+        const files = fs.readdirSync(outDir);
+        outputChannel.appendLine(`Files in out directory: ${files.join(', ')}`);
+      }
+      
+      // Check language client status
+      outputChannel.appendLine(`Language client created: ${client ? "Yes" : "No"}`);
+      if (client) {
+        outputChannel.appendLine(`Language client state: ${client.state}`);
+        outputChannel.appendLine(`Language client running: ${client.needsStart() ? "No" : "Yes"}`);
+      }
+      
+      // Extension context
+      outputChannel.appendLine(`Extension path: ${context.extensionPath}`);
+      outputChannel.appendLine(`Extension mode: ${context.extensionMode}`);
+      
+      // VSCode info
+      outputChannel.appendLine(`VSCode version: ${vscode.version}`);
+      outputChannel.appendLine(`HQL Extension registered: ${vscode.languages.getLanguages().then(langs => langs.includes('hql'))}`);
+      
+      vscode.window.showInformationMessage("HQL diagnostic information written to output channel");
+    }
+  ));
   
   // Notify user that the extension is ready
   ui.showInfo('HQL extension activated with enhanced syntax support');

@@ -1,0 +1,12 @@
+{
+  "name": "@boraseoksoon/test-hql",
+  "version": "0.0.12",
+  "description": "HQL module: \u001b[A",
+  "module": "./esm/index.js",
+  "types": "./types/index.d.ts",
+  "files": [
+    "esm",
+    "types",
+    "README.md"
+  ]
+}
