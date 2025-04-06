@@ -1,4 +1,199 @@
 /**
+ * Base error class for all transpiler errors
+ */
+export class BaseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BaseError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+
+  /**
+   * Base version of a formatted message.
+   * Derived classes can override this if needed.
+   */
+  public formatMessage(): string {
+    return this.message;
+  }
+  
+  /**
+   * Get a suggestion based on this error
+   */
+  public getSuggestion(): string {
+    return "Check your code for syntax errors or incorrect types.";
+  }
+}
+
+/**
+ * Enhanced base error class that adds source context information
+ * This extends the existing TranspilerError without changing its API
+ */
+export class TranspilerError extends BaseError {
+  public source?: string;
+  public filePath?: string;
+  public line?: number;
+  public column?: number;
+  public contextLines: string[] = [];
+  private colorConfig: ColorConfig;
+
+  constructor(
+    message: string,
+    options: {
+      source?: string;
+      filePath?: string;
+      line?: number;
+      column?: number;
+      useColors?: boolean;
+    } = {}
+  ) {
+    super(message);
+    this.source = options.source;
+    this.filePath = options.filePath;
+    this.line = options.line;
+    this.column = options.column;
+    this.colorConfig = createColorConfig(options.useColors ?? true);
+    
+    // Extract context lines if we have all the location information
+    if (this.source && this.line !== undefined) {
+      this.extractContextLines();
+    } else if (this.source) {
+      // If we have source but no line, try to extract from message
+      const lineMatch = message.match(/line (\d+)/i);
+      const columnMatch = message.match(/column (\d+)/i);
+      
+      if (lineMatch) {
+        this.line = parseInt(lineMatch[1], 10);
+        if (columnMatch) {
+          this.column = parseInt(columnMatch[1], 10);
+        }
+        this.extractContextLines();
+      }
+    }
+    
+    // Fix prototype chain
+    Object.setPrototypeOf(this, TranspilerError.prototype);
+  }
+  
+  /**
+   * Extract context lines from the source
+   */
+  private extractContextLines(): void {
+    if (!this.source || this.line === undefined) return;
+    
+    const lines = this.source.split('\n');
+    const lineIndex = this.line - 1;
+    
+    if (lineIndex < 0 || lineIndex >= lines.length) return;
+    
+    // Clear any existing context lines
+    this.contextLines = [];
+    
+    // Add lines before for context (up to 2)
+    for (let i = Math.max(0, lineIndex - 2); i < lineIndex; i++) {
+      this.contextLines.push(`${i + 1} │ ${lines[i]}`);
+    }
+    
+    // Add the error line
+    this.contextLines.push(`${lineIndex + 1} │ ${lines[lineIndex]}`);
+    
+    // Add pointer to the column
+    if (this.column !== undefined) {
+      this.contextLines.push(`  │ ${' '.repeat(Math.max(0, this.column - 1))}^`);
+    }
+    
+    // Add lines after for context (up to 2)
+    for (let i = lineIndex + 1; i < Math.min(lines.length, lineIndex + 3); i++) {
+      this.contextLines.push(`${i + 1} │ ${lines[i]}`);
+    }
+  }
+  
+  /**
+   * Generate an enhanced error message with source context
+   */
+  public override formatMessage(): string {
+    const c = this.colorConfig;
+    
+    // Start with basic message
+    let result = c.red(c.bold(`Error: ${this.message}`));
+    
+    // Add file location if available
+    if (this.filePath) {
+      let locationPath = this.filePath;
+      
+      // Add line and column if available (creates clickable paths in editors)
+      if (this.line !== undefined) {
+        locationPath += `:${this.line}`;
+        if (this.column !== undefined) {
+          locationPath += `:${this.column}`;
+        }
+      }
+      
+      result += `\n${c.cyan("Location:")} ${locationPath}`;
+    }
+    
+    // Add source context if available
+    if (this.contextLines.length > 0) {
+      result += '\n\n';
+      
+      for (let i = 0; i < this.contextLines.length; i++) {
+        const line = this.contextLines[i];
+        
+        // Format the lines with different colors
+        if (line.includes(" │ ")) {
+          if (line.startsWith("  │ ")) {
+            // Error pointer
+            result += c.red(line) + '\n';
+          } else if (i === this.contextLines.length - 3 || 
+                    (this.contextLines.length <= 3 && i === this.contextLines.length - 2)) {
+            // Error line
+            result += c.yellow(line) + '\n';
+          } else {
+            // Context line
+            result += c.gray(line) + '\n';
+          }
+        } else {
+          result += line + '\n';
+        }
+      }
+    } else if (this.source) {
+      // If we have source but extraction failed, show the first few lines
+      const lines = this.source.split('\n');
+      const maxLines = Math.min(5, lines.length);
+      
+      result += '\n\n';
+      for (let i = 0; i < maxLines; i++) {
+        result += c.gray(`${i + 1} │ ${lines[i]}`) + '\n';
+      }
+      if (lines.length > maxLines) {
+        result += c.gray(`... (${lines.length - maxLines} more lines)`) + '\n';
+      }
+    }
+    
+    return result;
+  }
+  
+  /**
+   * Create an enhanced error from a basic error
+   */
+  static fromError(
+    error: Error,
+    options: {
+      source?: string;
+      filePath?: string;
+      line?: number;
+      column?: number;
+      useColors?: boolean;
+    } = {}
+  ): TranspilerError {
+    return new TranspilerError(
+      error.message,
+      options
+    );
+  }
+}
+
+
+/**
  * Helper function to wrap existing parse errors with enhanced formatting
  */
 export function enhanceParseError(error: ParseError, useColors: boolean = true): EnhancedParseError {
@@ -306,32 +501,6 @@ export function createColorConfig(useColors: boolean): ColorConfig {
 }
 
 /**
- * Base error class for all transpiler errors
- */
-export class BaseError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "BaseError";
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-
-  /**
-   * Base version of a formatted message.
-   * Derived classes can override this if needed.
-   */
-  public formatMessage(): string {
-    return this.message;
-  }
-  
-  /**
-   * Get a suggestion based on this error
-   */
-  public getSuggestion(): string {
-    return "Check your code for syntax errors or incorrect types.";
-  }
-}
-
-/**
  * Parse error with source position information
  */
 export class ParseError extends BaseError {
@@ -377,174 +546,6 @@ export class ParseError extends BaseError {
     }
     
     return "Review your syntax carefully, paying attention to brackets, quotes, and other delimiters.";
-  }
-}
-
-/**
- * Enhanced base error class that adds source context information
- * This extends the existing TranspilerError without changing its API
- */
-export class TranspilerError extends BaseError {
-  public source?: string;
-  public filePath?: string;
-  public line?: number;
-  public column?: number;
-  public contextLines: string[] = [];
-  private colorConfig: ColorConfig;
-
-  constructor(
-    message: string,
-    options: {
-      source?: string;
-      filePath?: string;
-      line?: number;
-      column?: number;
-      useColors?: boolean;
-    } = {}
-  ) {
-    super(message);
-    this.source = options.source;
-    this.filePath = options.filePath;
-    this.line = options.line;
-    this.column = options.column;
-    this.colorConfig = createColorConfig(options.useColors ?? true);
-    
-    // Extract context lines if we have all the location information
-    if (this.source && this.line !== undefined) {
-      this.extractContextLines();
-    } else if (this.source) {
-      // If we have source but no line, try to extract from message
-      const lineMatch = message.match(/line (\d+)/i);
-      const columnMatch = message.match(/column (\d+)/i);
-      
-      if (lineMatch) {
-        this.line = parseInt(lineMatch[1], 10);
-        if (columnMatch) {
-          this.column = parseInt(columnMatch[1], 10);
-        }
-        this.extractContextLines();
-      }
-    }
-    
-    // Fix prototype chain
-    Object.setPrototypeOf(this, TranspilerError.prototype);
-  }
-  
-  /**
-   * Extract context lines from the source
-   */
-  private extractContextLines(): void {
-    if (!this.source || this.line === undefined) return;
-    
-    const lines = this.source.split('\n');
-    const lineIndex = this.line - 1;
-    
-    if (lineIndex < 0 || lineIndex >= lines.length) return;
-    
-    // Clear any existing context lines
-    this.contextLines = [];
-    
-    // Add lines before for context (up to 2)
-    for (let i = Math.max(0, lineIndex - 2); i < lineIndex; i++) {
-      this.contextLines.push(`${i + 1} │ ${lines[i]}`);
-    }
-    
-    // Add the error line
-    this.contextLines.push(`${lineIndex + 1} │ ${lines[lineIndex]}`);
-    
-    // Add pointer to the column
-    if (this.column !== undefined) {
-      this.contextLines.push(`  │ ${' '.repeat(Math.max(0, this.column - 1))}^`);
-    }
-    
-    // Add lines after for context (up to 2)
-    for (let i = lineIndex + 1; i < Math.min(lines.length, lineIndex + 3); i++) {
-      this.contextLines.push(`${i + 1} │ ${lines[i]}`);
-    }
-  }
-  
-  /**
-   * Generate an enhanced error message with source context
-   */
-  public override formatMessage(): string {
-    const c = this.colorConfig;
-    
-    // Start with basic message
-    let result = c.red(c.bold(`Error: ${this.message}`));
-    
-    // Add file location if available
-    if (this.filePath) {
-      let locationPath = this.filePath;
-      
-      // Add line and column if available (creates clickable paths in editors)
-      if (this.line !== undefined) {
-        locationPath += `:${this.line}`;
-        if (this.column !== undefined) {
-          locationPath += `:${this.column}`;
-        }
-      }
-      
-      result += `\n${c.cyan("Location:")} ${locationPath}`;
-    }
-    
-    // Add source context if available
-    if (this.contextLines.length > 0) {
-      result += '\n\n';
-      
-      for (let i = 0; i < this.contextLines.length; i++) {
-        const line = this.contextLines[i];
-        
-        // Format the lines with different colors
-        if (line.includes(" │ ")) {
-          if (line.startsWith("  │ ")) {
-            // Error pointer
-            result += c.red(line) + '\n';
-          } else if (i === this.contextLines.length - 3 || 
-                    (this.contextLines.length <= 3 && i === this.contextLines.length - 2)) {
-            // Error line
-            result += c.yellow(line) + '\n';
-          } else {
-            // Context line
-            result += c.gray(line) + '\n';
-          }
-        } else {
-          result += line + '\n';
-        }
-      }
-    } else if (this.source) {
-      // If we have source but extraction failed, show the first few lines
-      const lines = this.source.split('\n');
-      const maxLines = Math.min(5, lines.length);
-      
-      result += '\n\n';
-      for (let i = 0; i < maxLines; i++) {
-        result += c.gray(`${i + 1} │ ${lines[i]}`) + '\n';
-      }
-      if (lines.length > maxLines) {
-        result += c.gray(`... (${lines.length - maxLines} more lines)`) + '\n';
-      }
-    }
-    
-    return result;
-  }
-  
-  /**
-   * Create an enhanced error from a basic error
-   */
-  static fromError(
-    error: Error,
-    options: {
-      source?: string;
-      filePath?: string;
-      line?: number;
-      column?: number;
-      useColors?: boolean;
-    } = {}
-  ): TranspilerError {
-    return new TranspilerError(
-      error.message,
-      options
-    );
   }
 }
 

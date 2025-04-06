@@ -6,8 +6,8 @@ import {
   ServerOptions,
   TransportKind
 } from "vscode-languageclient/node";
-import { getExpressionRange, getOutermostExpressionRange } from "./helpers/getExpressionRange";
-import { showInlineEvaluation, showInlineError, clearInlineDecorations } from "./ui";
+import { getExpressionRange, getOutermostExpressionRange } from "./helper/getExpressionRange";
+import { showInlineEvaluation, showInlineError, clearInlineDecorations, applyRainbowParentheses } from "./ui";
 import { fetchEvaluation } from "./client";
 import { startServer, stopServer, restartServer, isServerRunning } from './server-manager';
 import { Logger } from './logger';
@@ -258,6 +258,24 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeTextDocument(e => {
       if (e.document.languageId === 'hql') {
         clearInlineDecorations(e.document);
+        
+        // Reapply rainbow parentheses if enabled
+        const rainbowParensEnabled = vscode.workspace.getConfiguration('hql').get<boolean>('paredit.enabled', true);
+        if (rainbowParensEnabled && vscode.window.activeTextEditor?.document === e.document) {
+          applyRainbowParentheses(vscode.window.activeTextEditor);
+        }
+      }
+    })
+  );
+  
+  // Apply rainbow parentheses when changing active editor
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor && editor.document.languageId === 'hql') {
+        const rainbowParensEnabled = vscode.workspace.getConfiguration('hql').get<boolean>('paredit.enabled', true);
+        if (rainbowParensEnabled) {
+          applyRainbowParentheses(editor);
+        }
       }
     })
   );
@@ -330,6 +348,7 @@ export function activate(context: vscode.ExtensionContext) {
           // Add missing closing parentheses
           const missingCloseCount = openCount - closeCount;
           editBuilder.insert(document.positionAt(text.length), ')'.repeat(missingCloseCount));
+          vscode.window.showInformationMessage(`Added ${missingCloseCount} missing closing parenthese${missingCloseCount === 1 ? '' : 's'}`);
         } else if (closeCount > openCount) {
           // Remove extra closing parentheses
           const extraCloseCount = closeCount - openCount;
@@ -346,6 +365,9 @@ export function activate(context: vscode.ExtensionContext) {
               lastPos--;
             }
           }
+          vscode.window.showInformationMessage(`Removed ${extraCloseCount} extra closing parenthese${extraCloseCount === 1 ? '' : 's'}`);
+        } else {
+          vscode.window.showInformationMessage('Parentheses are already balanced.');
         }
       });
     })

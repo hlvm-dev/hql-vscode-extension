@@ -3,6 +3,9 @@ import { Logger } from "./logger";
 
 const logger = new Logger(false);
 
+/**
+ * Decoration types for different UI elements
+ */
 interface DecorationEntry {
   type: vscode.TextEditorDecorationType;
   range: vscode.Range;
@@ -10,6 +13,34 @@ interface DecorationEntry {
 
 // Decoration cache to track all decorations per document
 const inlineDecorationMap: Map<string, DecorationEntry[]> = new Map();
+
+// Style constants for UI elements
+const UI_CONSTANTS = {
+  EVALUATION_COLORS: {
+    SUCCESS: {
+      BG: "rgba(100, 200, 100, 0.1)",
+      BORDER: "rgba(100, 200, 100, 0.2)",
+      TEXT: "#3c9a3c"
+    },
+    ERROR: {
+      BG: "rgba(255, 100, 100, 0.1)",
+      BORDER: "rgba(255, 100, 100, 0.2)",
+      TEXT: "#d32f2f"
+    },
+    PENDING: {
+      BG: "rgba(100, 100, 255, 0.1)",
+      BORDER: "rgba(100, 100, 255, 0.2)",
+      TEXT: "#4040ff"
+    }
+  },
+  DELIMITER_COLORS: [
+    "#8000ff", // SICP purple
+    "#ff0000", // SICP red
+    "#0000ff"  // SICP blue
+  ],
+  RAINBOW_PAREN_OPACITY: 0.9,
+  HOVER_MARKDOWN_HEADER: "**HQL Evaluation Result**"
+};
 
 /**
  * Add a decoration to the cache
@@ -55,18 +86,11 @@ function clearDecorationsForRange(document: vscode.TextDocument, targetRange: vs
  * Create highlight decoration based on evaluation state
  */
 function createHighlightDecoration(state: "success" | "error" | "pending"): vscode.TextEditorDecorationType {
-  // Colors based on state
-  const colors = {
-    success: { bg: "rgba(100, 200, 100, 0.1)", border: "rgba(100, 200, 100, 0.2)" },
-    error: { bg: "rgba(255, 100, 100, 0.1)", border: "rgba(255, 100, 100, 0.2)" },
-    pending: { bg: "rgba(100, 100, 255, 0.1)", border: "rgba(100, 100, 255, 0.2)" }
-  };
-  
-  const color = colors[state];
+  const colors = UI_CONSTANTS.EVALUATION_COLORS[state.toUpperCase() as keyof typeof UI_CONSTANTS.EVALUATION_COLORS];
   
   return vscode.window.createTextEditorDecorationType({
-    backgroundColor: color.bg,
-    border: `1px solid ${color.border}`,
+    backgroundColor: colors.BG,
+    border: `1px solid ${colors.BORDER}`,
     borderRadius: "3px",
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
@@ -83,9 +107,23 @@ function formatResult(result: string): string {
     const parsed = JSON.parse(result);
     return JSON.stringify(parsed, null, 2);
   } catch (e) {
-    // Not JSON, return as is
+    // Not JSON, perform some basic formatting
+    // Truncate extremely long results
+    if (result.length > 1000) {
+      return result.substring(0, 1000) + "... (truncated)";
+    }
     return result;
   }
+}
+
+/**
+ * Create hover markdown for evaluation results
+ */
+function createHoverMarkdown(result: string, isError: boolean = false): vscode.MarkdownString {
+  const header = isError ? "**HQL Error**" : UI_CONSTANTS.HOVER_MARKDOWN_HEADER;
+  const markdown = new vscode.MarkdownString(`${header}\n\n\`\`\`\n${result}\n\`\`\``);
+  markdown.isTrusted = true;
+  return markdown;
 }
 
 /**
@@ -112,7 +150,10 @@ export function showInlineEvaluation(
   
   // Determine text color based on active theme
   const themeKind = vscode.window.activeColorTheme.kind;
-  const evaluationTextColor = themeKind === vscode.ColorThemeKind.Light ? "#333333" : "#cccccc";
+  const colors = UI_CONSTANTS.EVALUATION_COLORS[state.toUpperCase() as keyof typeof UI_CONSTANTS.EVALUATION_COLORS];
+  const evaluationTextColor = themeKind === vscode.ColorThemeKind.Light 
+    ? colors.TEXT 
+    : colors.TEXT; // Same color for both themes for now, can be adjusted
   
   // Create inline decoration type for the result
   const inlineType = vscode.window.createTextEditorDecorationType({
@@ -128,7 +169,7 @@ export function showInlineEvaluation(
   
   editor.setDecorations(inlineType, [{ 
     range,
-    hoverMessage: new vscode.MarkdownString(`**HQL Evaluation Result**\n\n\`\`\`\n${formattedResult}\n\`\`\``)
+    hoverMessage: createHoverMarkdown(formattedResult)
   }]);
   
   addDecoration(editor.document.uri.toString(), { type: inlineType, range });
@@ -155,7 +196,7 @@ export function showInlineError(
 
   // Create inline decoration for the error message
   const themeKind = vscode.window.activeColorTheme.kind;
-  const errorTextColor = themeKind === vscode.ColorThemeKind.Light ? "#d32f2f" : "#f44336";
+  const errorTextColor = UI_CONSTANTS.EVALUATION_COLORS.ERROR.TEXT;
   
   const inlineType = vscode.window.createTextEditorDecorationType({
     after: {
@@ -169,7 +210,7 @@ export function showInlineError(
   
   editor.setDecorations(inlineType, [{ 
     range,
-    hoverMessage: new vscode.MarkdownString(`**HQL Error**\n\n\`\`\`\n${errorMessage}\n\`\`\``)
+    hoverMessage: createHoverMarkdown(errorMessage, true)
   }]);
   
   addDecoration(editor.document.uri.toString(), { type: inlineType, range });
@@ -186,8 +227,8 @@ export function highlightUnmatchedParentheses(
 ): void {
   // Create error highlight decoration
   const errorHighlight = vscode.window.createTextEditorDecorationType({
-    backgroundColor: "rgba(255, 0, 0, 0.3)",
-    border: "1px solid rgba(255, 0, 0, 0.5)",
+    backgroundColor: UI_CONSTANTS.EVALUATION_COLORS.ERROR.BG,
+    border: `1px solid ${UI_CONSTANTS.EVALUATION_COLORS.ERROR.BORDER}`,
     borderRadius: "3px",
   });
   
@@ -210,8 +251,8 @@ export function highlightMatchingParentheses(
 ): void {
   // Create highlight decoration
   const highlightType = vscode.window.createTextEditorDecorationType({
-    backgroundColor: "rgba(100, 100, 255, 0.3)",
-    border: "1px solid rgba(100, 100, 255, 0.5)",
+    backgroundColor: UI_CONSTANTS.EVALUATION_COLORS.PENDING.BG,
+    border: `1px solid ${UI_CONSTANTS.EVALUATION_COLORS.PENDING.BORDER}`,
     borderRadius: "3px",
   });
   
@@ -239,17 +280,17 @@ export function applyRainbowParentheses(editor: vscode.TextEditor): void {
   }
   
   const text = editor.document.getText();
-  const parenColors = vscode.workspace.getConfiguration('hql').get<string[]>('theme.parenthesesColors', [
-    '#8000ff', // purple
-    '#ff0000', // red
-    '#0000ff'  // blue
-  ]);
+  // Get configured colors or use defaults based on SICP book style
+  const parenColors = vscode.workspace.getConfiguration('hql').get<string[]>('theme.parenthesesColors', 
+    UI_CONSTANTS.DELIMITER_COLORS
+  );
   
   // Create decorations for each nesting level
   const decorationTypes = parenColors.map(color =>
     vscode.window.createTextEditorDecorationType({
       color: color,
-      fontWeight: "bold"
+      fontWeight: "bold",
+      opacity: String(UI_CONSTANTS.RAINBOW_PAREN_OPACITY)
     })
   );
   
@@ -281,5 +322,19 @@ export function applyRainbowParentheses(editor: vscode.TextEditor): void {
       ...openParenRanges[i],
       ...closeParenRanges[i]
     ]);
+  }
+}
+
+/**
+ * Reset all UI decorations for the editor
+ */
+export function resetEditorDecorations(editor: vscode.TextEditor): void {
+  // Clear all inline decorations
+  clearInlineDecorations(editor.document);
+  
+  // Reapply rainbow parentheses if enabled
+  const rainbowParensEnabled = vscode.workspace.getConfiguration('hql').get<boolean>('paredit.enabled', true);
+  if (rainbowParensEnabled) {
+    applyRainbowParentheses(editor);
   }
 }

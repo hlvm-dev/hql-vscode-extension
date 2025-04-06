@@ -3,7 +3,7 @@
 /**
  * Core S-expression types representing the fundamental HQL building blocks
  */
-export type SExp = SSymbol | SList | SLiteral;
+export type SExp = SSymbol | SList | SLiteral | SString | SNumber | SBoolean | SNil;
 
 export interface SSymbol {
   type: "symbol";
@@ -18,6 +18,26 @@ export interface SList {
 export interface SLiteral {
   type: "literal";
   value: string | number | boolean | null;
+}
+
+export interface SString {
+  type: "string";
+  value: string;
+}
+
+export interface SNumber {
+  type: "number";
+  value: number;
+}
+
+export interface SBoolean {
+  type: "boolean";
+  value: boolean;
+}
+
+export interface SNil {
+  type: "nil";
+  value: null;
 }
 
 /**
@@ -37,8 +57,20 @@ export function createLiteral(
   return { type: "literal", value };
 }
 
-export function createNilLiteral(): SLiteral {
-  return { type: "literal", value: null };
+export function createStringLiteral(value: string): SString {
+  return { type: "string", value };
+}
+
+export function createNumberLiteral(value: number): SNumber {
+  return { type: "number", value };
+}
+
+export function createBooleanLiteral(value: boolean): SBoolean {
+  return { type: "boolean", value };
+}
+
+export function createNilLiteral(): SNil {
+  return { type: "nil", value: null };
 }
 
 /**
@@ -54,6 +86,22 @@ export function isList(exp: SExp): exp is SList {
 
 export function isLiteral(exp: SExp): exp is SLiteral {
   return exp.type === "literal";
+}
+
+export function isString(exp: SExp): exp is SString {
+  return exp.type === "string";
+}
+
+export function isNumber(exp: SExp): exp is SNumber {
+  return exp.type === "number";
+}
+
+export function isBoolean(exp: SExp): exp is SBoolean {
+  return exp.type === "boolean";
+}
+
+export function isNil(exp: SExp): exp is SNil {
+  return exp.type === "nil";
 }
 
 /**
@@ -92,6 +140,14 @@ export function sexpToString(exp: SExp): string {
     } else {
       return String(exp.value);
     }
+  } else if (isString(exp)) {
+    return `"${exp.value}"`;
+  } else if (isNumber(exp)) {
+    return String(exp.value);
+  } else if (isBoolean(exp)) {
+    return exp.value ? "true" : "false";
+  } else if (isNil(exp)) {
+    return "nil";
   } else if (isList(exp)) {
     return `(${exp.elements.map(sexpToString).join(" ")})`;
   } else {
@@ -107,6 +163,14 @@ export function cloneSExp(exp: SExp): SExp {
     return createSymbol(exp.name);
   } else if (isLiteral(exp)) {
     return createLiteral(exp.value);
+  } else if (isString(exp)) {
+    return createStringLiteral(exp.value);
+  } else if (isNumber(exp)) {
+    return createNumberLiteral(exp.value);
+  } else if (isBoolean(exp)) {
+    return createBooleanLiteral(exp.value);
+  } else if (isNil(exp)) {
+    return createNilLiteral();
   } else if (isList(exp)) {
     return createList(...exp.elements.map(cloneSExp));
   } else {
@@ -133,6 +197,6 @@ export function isSExpNamespaceImport(elements: SExp[]): boolean {
     isSymbol(elements[1]) &&
     isSymbol(elements[2]) &&
     elements[2].name === "from" &&
-    isLiteral(elements[3]) &&
-    typeof elements[3].value === "string";
+    ((isLiteral(elements[3]) && typeof elements[3].value === "string") ||
+     (isString(elements[3])));
 }

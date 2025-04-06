@@ -3,9 +3,16 @@ import {
   createLiteral,
   createNilLiteral,
   createSymbol,
+  createStringLiteral,
+  createNumberLiteral,
+  createBooleanLiteral,
   SExp,
   SList,
-  SSymbol
+  SSymbol,
+  SString,
+  SNumber,
+  SBoolean,
+  SNil
 } from "./s-exp/types";
 
 /**
@@ -237,7 +244,7 @@ function parseExpressionByTokenType(token: Token, state: ParserState): SExp {
     case TokenType.Comma: return createSymbol(",");
     case TokenType.Dot: return parseDotAccess(state, token);
     case TokenType.String: return parseStringLiteral(token.value);
-    case TokenType.Number: return createLiteral(Number(token.value));
+    case TokenType.Number: return createNumberLiteral(Number(token.value));
     case TokenType.Symbol: return parseSymbol(token.value);
     default: throw new ParseError(`Unexpected token type: ${token.type}`, token.position, state.input);
   }
@@ -259,15 +266,15 @@ function parseDotAccess(state: ParserState, dotToken: Token): SExp {
  */
 function parseStringLiteral(tokenValue: string): SExp {
   const str = tokenValue.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  return createLiteral(str);
+  return createStringLiteral(str);
 }
 
 /**
  * Parse a symbol, handling special cases like true, false, nil
  */
 function parseSymbol(tokenValue: string): SExp {
-  if (tokenValue === "true") return createLiteral(true);
-  if (tokenValue === "false") return createLiteral(false);
+  if (tokenValue === "true") return createBooleanLiteral(true);
+  if (tokenValue === "false") return createBooleanLiteral(false);
   if (tokenValue === "nil") return createNilLiteral();
   if (tokenValue.startsWith(".")) return createSymbol(tokenValue);
   if (tokenValue.includes(".") && !tokenValue.startsWith(".") && !tokenValue.endsWith("."))
@@ -490,3 +497,6 @@ function parseSet(state: ParserState): SList {
     ? createList(createSymbol("empty-set"))
     : createList(createSymbol("hash-set"), ...elements);
 }
+
+// Export all the S-expression types for other modules to use
+export { SExp, SList, SSymbol, SString, SNumber, SBoolean, SNil };

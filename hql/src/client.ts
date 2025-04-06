@@ -40,7 +40,8 @@ export async function fetchEvaluation(
     
     // Parse the response
     if (!response.ok) {
-      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`Server returned ${response.status}: ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
     }
     
     const json = (await response.json()) as NReplResponse;
