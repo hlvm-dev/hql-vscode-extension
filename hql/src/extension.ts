@@ -35,18 +35,26 @@ async function evaluateExpression() {
     ? getExpressionRange(doc, editor.selection.active)
     : editor.selection;
   
-  const code = doc.getText(range);
+  // Convert the range to a vscode.Range if it's not already
+  const vsCodeRange = range instanceof vscode.Range 
+    ? range 
+    : new vscode.Range(
+        new vscode.Position(range.start.line, range.start.character),
+        new vscode.Position(range.end.line, range.end.character)
+      );
+  
+  const code = doc.getText(vsCodeRange);
   if (!code.trim()) {
     vscode.window.showInformationMessage("No expression found to evaluate.");
     return;
   }
 
   // Show a "busy" indicator immediately
-  showInlineEvaluation(editor, convertRange(range), "Evaluating...");
+  showInlineEvaluation(editor, vsCodeRange, "Evaluating...");
   
   // Create an AbortController for this request
   const abortController = new AbortController();
-  const requestId = `${doc.uri.toString()}:${range.start.line}:${range.start.character}`;
+  const requestId = `${doc.uri.toString()}:${vsCodeRange.start.line}:${vsCodeRange.start.character}`;
   activeEvaluations.set(requestId, abortController);
   
   try {
@@ -60,7 +68,7 @@ async function evaluateExpression() {
       if (startResponse === "Yes") {
         await startServer();
       } else {
-        showInlineError(editor, range, "REPL server not running");
+        showInlineError(editor, vsCodeRange, "REPL server not running");
         activeEvaluations.delete(requestId);
         return;
       }
@@ -73,7 +81,7 @@ async function evaluateExpression() {
       return;
     }
     
-    showInlineEvaluation(editor, range, result);
+    showInlineEvaluation(editor, vsCodeRange, result);
     logger.debug(`Evaluated expression: ${code} => ${result}`);
   } catch (err: any) {
     if (err.name === 'AbortError') {
@@ -81,7 +89,7 @@ async function evaluateExpression() {
       return;
     }
     
-    showInlineError(editor, range, err.message || String(err));
+    showInlineError(editor, vsCodeRange, err.message || String(err));
     vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
     logger.error(`Evaluation error: ${err.message || err}`);
   } finally {
@@ -99,22 +107,28 @@ async function evaluateOutermostExpression() {
     return;
   }
   const doc = editor.document;
-  const range = editor.selection.isEmpty
+  const lspRange = editor.selection.isEmpty
     ? getOutermostExpressionRange(doc, editor.selection.active)
     : editor.selection;
   
-    const code = doc.getText(convertRange(range));
+  // Convert the LSP range to a VS Code range
+  const vsCodeRange = new vscode.Range(
+    new vscode.Position(lspRange.start.line, lspRange.start.character),
+    new vscode.Position(lspRange.end.line, lspRange.end.character)
+  );
+  
+  const code = doc.getText(vsCodeRange);
   if (!code.trim()) {
     vscode.window.showInformationMessage("No expression found to evaluate.");
     return;
   }
 
   // Show a "busy" indicator immediately
-  showInlineEvaluation(editor, convertRange(range), "Evaluating...");
+  showInlineEvaluation(editor, vsCodeRange, "Evaluating...");
   
   // Create an AbortController for this request
   const abortController = new AbortController();
-  const requestId = `${doc.uri.toString()}:${range.start.line}:${range.start.character}`;
+  const requestId = `${doc.uri.toString()}:${vsCodeRange.start.line}:${vsCodeRange.start.character}`;
   activeEvaluations.set(requestId, abortController);
   
   try {
@@ -128,7 +142,7 @@ async function evaluateOutermostExpression() {
       if (startResponse === "Yes") {
         await startServer();
       } else {
-        showInlineError(editor, convertRange(range), "REPL server not running");
+        showInlineError(editor, vsCodeRange, "REPL server not running");
         activeEvaluations.delete(requestId);
         return;
       }
@@ -141,7 +155,7 @@ async function evaluateOutermostExpression() {
       return;
     }
     
-    showInlineEvaluation(editor, convertRange(range), result);
+    showInlineEvaluation(editor, vsCodeRange, result);
     logger.debug(`Evaluated outermost expression: ${code} => ${result}`);
   } catch (err: any) {
     if (err.name === 'AbortError') {
@@ -149,7 +163,7 @@ async function evaluateOutermostExpression() {
       return;
     }
     
-    showInlineError(editor, convertRange(range), err.message || String(err));
+    showInlineError(editor, vsCodeRange, err.message || String(err));
     vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
     logger.error(`Evaluation error: ${err.message || err}`);
   } finally {
@@ -487,12 +501,4 @@ export function deactivate(): Thenable<void> | undefined {
     return client.stop();
   }
   return undefined;
-}
-
-// Add this function to the top of your extension.ts file
-function convertRange(range: vscode.Range | vscode.Selection): vscode.Range {
-  if (range instanceof vscode.Selection) {
-    return new vscode.Range(range.start, range.end);
-  }
-  return range as vscode.Range;
 }
