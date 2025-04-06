@@ -42,7 +42,7 @@ async function evaluateExpression() {
   }
 
   // Show a "busy" indicator immediately
-  showInlineEvaluation(editor, range, "Evaluating...");
+  showInlineEvaluation(editor, convertRange(range), "Evaluating...");
   
   // Create an AbortController for this request
   const abortController = new AbortController();
@@ -103,14 +103,14 @@ async function evaluateOutermostExpression() {
     ? getOutermostExpressionRange(doc, editor.selection.active)
     : editor.selection;
   
-  const code = doc.getText(range);
+    const code = doc.getText(convertRange(range));
   if (!code.trim()) {
     vscode.window.showInformationMessage("No expression found to evaluate.");
     return;
   }
 
   // Show a "busy" indicator immediately
-  showInlineEvaluation(editor, range, "Evaluating...");
+  showInlineEvaluation(editor, convertRange(range), "Evaluating...");
   
   // Create an AbortController for this request
   const abortController = new AbortController();
@@ -128,7 +128,7 @@ async function evaluateOutermostExpression() {
       if (startResponse === "Yes") {
         await startServer();
       } else {
-        showInlineError(editor, range, "REPL server not running");
+        showInlineError(editor, convertRange(range), "REPL server not running");
         activeEvaluations.delete(requestId);
         return;
       }
@@ -141,7 +141,7 @@ async function evaluateOutermostExpression() {
       return;
     }
     
-    showInlineEvaluation(editor, range, result);
+    showInlineEvaluation(editor, convertRange(range), result);
     logger.debug(`Evaluated outermost expression: ${code} => ${result}`);
   } catch (err: any) {
     if (err.name === 'AbortError') {
@@ -149,7 +149,7 @@ async function evaluateOutermostExpression() {
       return;
     }
     
-    showInlineError(editor, range, err.message || String(err));
+    showInlineError(editor, convertRange(range), err.message || String(err));
     vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
     logger.error(`Evaluation error: ${err.message || err}`);
   } finally {
@@ -225,7 +225,8 @@ export function activate(context: vscode.ExtensionContext) {
   client = new LanguageClient("hqlLanguageServer", "HQL Language Server", serverOptions, clientOptions);
   
   // Start the client, which also starts the server
-  context.subscriptions.push(client.start());
+  context.subscriptions.push({ dispose: () => client.stop() });
+  client.start();
   logger.info("HQL Language Server started");
 
   // Register commands for evaluation
@@ -486,4 +487,12 @@ export function deactivate(): Thenable<void> | undefined {
     return client.stop();
   }
   return undefined;
+}
+
+// Add this function to the top of your extension.ts file
+function convertRange(range: vscode.Range | vscode.Selection): vscode.Range {
+  if (range instanceof vscode.Selection) {
+    return new vscode.Range(range.start, range.end);
+  }
+  return range as vscode.Range;
 }

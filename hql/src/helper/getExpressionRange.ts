@@ -1,6 +1,7 @@
-import { TextDocument, Position, Range } from 'vscode';
+import { Range, Position } from 'vscode-languageserver';
 import { parse } from '../parser';
 import { SExp, SList, SSymbol, isList, isSymbol, sexpToString } from '../s-exp/types';
+import { ITextDocument, createTextDocumentAdapter } from '../document-adapter';
 
 /**
  * Escapes special characters in a string for use in a regular expression
@@ -12,7 +13,7 @@ function escapeRegExp(str: string): string {
 /**
  * Finds the range of an expression in the document
  */
-export function findExpressionRange(document: TextDocument, exp: SExp): Range {
+export function findExpressionRange(document: ITextDocument, exp: SExp): Range {
   const text = document.getText();
   const expString = expressionToString(exp);
   
@@ -30,7 +31,7 @@ export function findExpressionRange(document: TextDocument, exp: SExp): Range {
     const startPos = document.positionAt(startOffset);
     const endPos = document.positionAt(endOffset);
     
-    return new Range(startPos, endPos);
+    return Range.create(startPos, endPos);
   }
   
   // If unable to find the exact expression, try to approximate based on position
@@ -39,13 +40,13 @@ export function findExpressionRange(document: TextDocument, exp: SExp): Range {
   }
   
   // Fallback to a default range at position 0,0
-  return new Range(new Position(0, 0), new Position(0, 0));
+  return Range.create(Position.create(0, 0), Position.create(0, 0));
 }
 
 /**
  * Approximates the range of a list expression
  */
-function findListExpressionRange(document: TextDocument, listExp: SList): Range {
+function findListExpressionRange(document: ITextDocument, listExp: SList): Range {
   const text = document.getText();
   
   // Try to find matching parentheses
@@ -53,7 +54,7 @@ function findListExpressionRange(document: TextDocument, listExp: SList): Range 
   const endingParens = findParenthesisPositions(text, ')');
   
   if (startingParens.length === 0 || endingParens.length === 0) {
-    return new Range(new Position(0, 0), new Position(0, 0));
+    return Range.create(Position.create(0, 0), Position.create(0, 0));
   }
   
   // Try to match the first element of the list expression if it's a symbol
@@ -82,7 +83,7 @@ function findListExpressionRange(document: TextDocument, listExp: SList): Range 
                 // We found a match!
                 const startPosition = document.positionAt(startPos);
                 const endPosition = document.positionAt(endPos + 1);
-                return new Range(startPosition, endPosition);
+                return Range.create(startPosition, endPosition);
               }
             } catch (e) {
               // Parsing failed, try the next closing parenthesis
@@ -95,7 +96,7 @@ function findListExpressionRange(document: TextDocument, listExp: SList): Range 
   }
   
   // Fallback to searching based on the entire list's string representation
-  return new Range(new Position(0, 0), new Position(0, 0));
+  return Range.create(Position.create(0, 0), Position.create(0, 0));
 }
 
 /**
@@ -150,7 +151,7 @@ function expressionToString(exp: SExp): string {
 /**
  * Gets the range of an S-expression at a specific position in the document
  */
-export function getExpressionRangeAtPosition(document: TextDocument, position: Position): Range | null {
+export function getExpressionRangeAtPosition(document: ITextDocument, position: Position): Range | null {
   try {
     const text = document.getText();
     const expressions = parse(text);
@@ -158,7 +159,7 @@ export function getExpressionRangeAtPosition(document: TextDocument, position: P
     // Find the expression that contains the cursor position
     for (const exp of expressions) {
       const range = findExpressionRange(document, exp);
-      if (range.contains(position)) {
+      if (containsPosition(range, position)) {
         return range;
       }
     }
@@ -171,9 +172,28 @@ export function getExpressionRangeAtPosition(document: TextDocument, position: P
 }
 
 /**
+ * Helper function to check if a range contains a position
+ */
+function containsPosition(range: Range, position: Position): boolean {
+  if (position.line < range.start.line || position.line > range.end.line) {
+    return false;
+  }
+  
+  if (position.line === range.start.line && position.character < range.start.character) {
+    return false;
+  }
+  
+  if (position.line === range.end.line && position.character > range.end.character) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
  * Gets the current S-expression under the cursor
  */
-export function getCurrentExpression(document: TextDocument, position: Position): SExp | null {
+export function getCurrentExpression(document: ITextDocument, position: Position): SExp | null {
   try {
     const text = document.getText();
     const expressions = parse(text);
@@ -181,7 +201,7 @@ export function getCurrentExpression(document: TextDocument, position: Position)
     // Find the expression that contains the cursor position
     for (const exp of expressions) {
       const range = findExpressionRange(document, exp);
-      if (range.contains(position)) {
+      if (containsPosition(range, position)) {
         return exp;
       }
     }
@@ -196,7 +216,7 @@ export function getCurrentExpression(document: TextDocument, position: Position)
 /**
  * Gets the parent expression of the current expression
  */
-export function getParentExpression(document: TextDocument, position: Position): SExp | null {
+export function getParentExpression(document: ITextDocument, position: Position): SExp | null {
   try {
     const text = document.getText();
     const expressions = parse(text);
@@ -207,11 +227,11 @@ export function getParentExpression(document: TextDocument, position: Position):
       if (isList(exp)) {
         const expRange = findExpressionRange(document, exp);
         
-        if (expRange.contains(position)) {
+        if (containsPosition(expRange, position)) {
           // Check if any child more specifically contains the position
           for (const child of exp.elements) {
             const childRange = findExpressionRange(document, child);
-            if (childRange.contains(position)) {
+            if (containsPosition(childRange, position)) {
               // This child contains the position, so this exp is a parent
               return exp;
             }
@@ -239,37 +259,61 @@ export function getParentExpression(document: TextDocument, position: Position):
 
 /**
  * Gets the range of the current expression under the cursor
+ * Works with both VS Code and LSP TextDocument types
  */
-export function getExpressionRange(document: TextDocument, position: Position): Range {
-  const expression = getCurrentExpression(document, position);
+export function getExpressionRange(document: any, position: any): Range {
+  // Adapt the document to our common interface
+  const adaptedDoc = createTextDocumentAdapter(document);
+  
+  // Adapt the position if it's a VS Code position
+  let lspPosition: Position;
+  if ('line' in position && 'character' in position) {
+    lspPosition = Position.create(position.line, position.character);
+  } else {
+    lspPosition = Position.create(position._line, position._character);
+  }
+  
+  const expression = getCurrentExpression(adaptedDoc, lspPosition);
   if (expression) {
-    return findExpressionRange(document, expression);
+    return findExpressionRange(adaptedDoc, expression);
   }
   
   // If no expression is found, return a range around the cursor position
-  return new Range(position, position);
+  return Range.create(lspPosition, lspPosition);
 }
 
 /**
  * Gets the range of the outermost expression containing the cursor position
+ * Works with both VS Code and LSP TextDocument types
  */
-export function getOutermostExpressionRange(document: TextDocument, position: Position): Range {
+export function getOutermostExpressionRange(document: any, position: any): Range {
+  // Adapt the document to our common interface
+  const adaptedDoc = createTextDocumentAdapter(document);
+  
+  // Adapt the position if it's a VS Code position
+  let lspPosition: Position;
+  if ('line' in position && 'character' in position) {
+    lspPosition = Position.create(position.line, position.character);
+  } else {
+    lspPosition = Position.create(position._line, position._character);
+  }
+  
   try {
-    const text = document.getText();
+    const text = adaptedDoc.getText();
     const expressions = parse(text);
     
     // Find the outermost expression that contains the cursor position
     for (const exp of expressions) {
-      const range = findExpressionRange(document, exp);
-      if (range.contains(position)) {
+      const range = findExpressionRange(adaptedDoc, exp);
+      if (containsPosition(range, lspPosition)) {
         return range;
       }
     }
     
     // If no expression is found, return a range around the cursor position
-    return new Range(position, position);
+    return Range.create(lspPosition, lspPosition);
   } catch (e) {
     console.error('Error getting outermost expression range:', e);
-    return new Range(position, position);
+    return Range.create(lspPosition, lspPosition);
   }
 }

@@ -30,6 +30,7 @@ import {
 } from 'vscode-languageserver-textdocument';
 
 import { parse, SExp, SList, SSymbol, SString, SNumber, SBoolean, SNil } from './parser';
+import { createTextDocumentAdapter, ITextDocument } from './document-adapter';
 import { 
   findExpressionRange, 
   getExpressionRangeAtPosition, 
@@ -70,6 +71,7 @@ const hqlKeywords = [
   { label: 'lambda', kind: CompletionItemKind.Keyword },
   { label: 'defmacro', kind: CompletionItemKind.Keyword },
   { label: 'macro', kind: CompletionItemKind.Keyword },
+  { label: 'return', kind: CompletionItemKind.Keyword, detail: 'Return a value from a function', documentation: { kind: MarkupKind.Markdown, value: '```\n(return value)\n```\nReturns the value from the function.' } },
   
   // Data structures
   { label: 'vector', kind: CompletionItemKind.Function },
@@ -138,7 +140,7 @@ connection.onInitialize((params: InitializeParams) => {
       // Tell the client that the server supports code completion
       completionProvider: {
         resolveProvider: true,
-        triggerCharacters: ['(', '.', ':']
+        triggerCharacters: ['(', '.', ':', ' ']
       },
       // Enable hover support
       hoverProvider: true,
@@ -213,7 +215,8 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
           if (name === 'fn' || name === 'fx' || name === 'defmacro' || name === 'macro') {
             if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
               const funcName = expr.elements[1].name;
-              const range = findExpressionRange(textDocument, expr);
+              const adaptedDoc = createTextDocumentAdapter(textDocument);
+              const range = findExpressionRange(adaptedDoc, expr);
               
               symbols.push({
                 name: funcName,
@@ -227,7 +230,8 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
           else if (name === 'let' || name === 'var') {
             if (expr.elements.length > 2 && isSymbol(expr.elements[1])) {
               const varName = expr.elements[1].name;
-              const range = findExpressionRange(textDocument, expr);
+              const adaptedDoc = createTextDocumentAdapter(textDocument);
+              const range = findExpressionRange(adaptedDoc, expr);
               
               symbols.push({
                 name: varName,
@@ -241,7 +245,8 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
               for (let i = 0; i < bindings.elements.length; i += 2) {
                 if (i + 1 < bindings.elements.length && isSymbol(bindings.elements[i])) {
                   const varName = (bindings.elements[i] as SSymbol).name;
-                  const range = findExpressionRange(textDocument, expr);
+                  const adaptedDoc = createTextDocumentAdapter(textDocument);
+                  const range = findExpressionRange(adaptedDoc, expr);
                   
                   symbols.push({
                     name: varName,
@@ -257,7 +262,8 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
           else if (name === 'class' || name === 'struct') {
             if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
               const className = expr.elements[1].name;
-              const range = findExpressionRange(textDocument, expr);
+              const adaptedDoc = createTextDocumentAdapter(textDocument);
+              const range = findExpressionRange(adaptedDoc, expr);
               
               symbols.push({
                 name: className,
@@ -271,7 +277,8 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
           else if (name === 'enum') {
             if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
               const enumName = expr.elements[1].name;
-              const range = findExpressionRange(textDocument, expr);
+              const adaptedDoc = createTextDocumentAdapter(textDocument);
+              const range = findExpressionRange(adaptedDoc, expr);
               
               symbols.push({
                 name: enumName,
@@ -289,7 +296,8 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
                       isSymbol(caseExpr.elements[1])) {
                     
                     const caseName = caseExpr.elements[1].name;
-                    const caseRange = findExpressionRange(textDocument, caseExpr);
+                    const adaptedDoc = createTextDocumentAdapter(textDocument);
+                    const caseRange = findExpressionRange(adaptedDoc, caseExpr);
                     
                     symbols.push({
                       name: `${enumName}.${caseName}`,
@@ -327,11 +335,8 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] =
   }
 
   const position = params.position;
-  const text = document.getText();
-  const offset = document.offsetAt(position);
-  
-  // Find the current expression at cursor position
-  const currentExp = getCurrentExpression(document, position);
+  const adaptedDoc = createTextDocumentAdapter(document);
+  const currentExp = getCurrentExpression(adaptedDoc, position);
   
   // Get all defined symbols for the current document
   const symbols = documentSymbols.get(document.uri) || [];
@@ -386,12 +391,31 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] =
         { label: 'pop', kind: CompletionItemKind.Method }
       ]);
     }
+    
+    // Suggest types after a colon in parameter lists
+    if (isSymbol(firstElement) && 
+        (firstElement.name === 'fn' || firstElement.name === 'fx') &&
+        document.getText().substring(document.offsetAt(position) - 1, document.offsetAt(position)) === ':') {
+      // Add type suggestions
+      completionItems = [
+        { label: 'Int', kind: CompletionItemKind.TypeParameter },
+        { label: 'Float', kind: CompletionItemKind.TypeParameter },
+        { label: 'Double', kind: CompletionItemKind.TypeParameter },
+        { label: 'String', kind: CompletionItemKind.TypeParameter },
+        { label: 'Boolean', kind: CompletionItemKind.TypeParameter },
+        { label: 'Bool', kind: CompletionItemKind.TypeParameter },
+        { label: '[Int]', kind: CompletionItemKind.TypeParameter, detail: 'Array of integers' },
+        { label: '[String]', kind: CompletionItemKind.TypeParameter, detail: 'Array of strings' },
+        { label: 'Any', kind: CompletionItemKind.TypeParameter }
+      ];
+    }
   }
   
   // If we are after a dot, suggest methods/properties based on context
-  const linePrefix = document.getText(
-    Range.create(Position.create(position.line, 0), position)
-  );
+  const linePrefix = document.getText({
+    start: { line: position.line, character: 0 },
+    end: position
+  });
   
   if (linePrefix.endsWith('.')) {
     // Try to determine the object type from the prefix
@@ -475,22 +499,20 @@ connection.onHover(({ textDocument, position }) => {
   
   try {
     // Get the expression at the cursor position
-    const expression = getCurrentExpression(document, position);
+    const adaptedDoc = createTextDocumentAdapter(document);
+    const expression = getCurrentExpression(adaptedDoc, position);
     if (!expression) {
       return null;
     }
     
     // Get the symbol at the cursor position
     const symbols = documentSymbols.get(document.uri) || [];
-    const offset = document.offsetAt(position);
-    const text = document.getText();
     
     // Check if we're hovering over a known symbol
     for (const symbol of symbols) {
       const range = symbol.location.range;
       if (
-        position.line >= range.start.line &&
-        position.line <= range.end.line &&
+        position.line >= range.start.line && position.line <= range.end.line &&
         (position.line > range.start.line || position.character >= range.start.character) &&
         (position.line < range.end.line || position.character <= range.end.character)
       ) {
@@ -602,6 +624,22 @@ connection.onHover(({ textDocument, position }) => {
           },
           range: wordRange
         };
+      } else if (word === 'enum') {
+        return {
+          contents: {
+            kind: MarkupKind.Markdown,
+            value: '```\n(enum Name\n  (case case1)\n  (case case2 value)\n  (case case3 param1: Type1 param2: Type2))\n```\nDefines an enumeration type with optional values or associated types.'
+          },
+          range: wordRange
+        };
+      } else if (word === 'return') {
+        return {
+          contents: {
+            kind: MarkupKind.Markdown,
+            value: '```\n(return value)\n```\nReturns a value from a function. Can be used for early returns in conditionals.'
+          },
+          range: wordRange
+        };
       }
     }
     
@@ -681,7 +719,25 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
       const expressions = parse(text);
       
       // Validate expressions (e.g., check for undefined symbols, type errors, etc.)
-      // This is where you would add your semantic validation
+      // This is where you would add your semantic validation for HQL
+      // For example, you could check for undefined variables, type mismatches, etc.
+      
+      // For demonstration, let's add a simple check for unbalanced parentheses
+      const openCount = (text.match(/\(/g) || []).length;
+      const closeCount = (text.match(/\)/g) || []).length;
+      
+      if (openCount !== closeCount) {
+        // Add diagnostic for unbalanced parentheses
+        diagnostics.push({
+          severity: DiagnosticSeverity.Error,
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 1 }
+          },
+          message: `Unbalanced parentheses: ${openCount} opening vs ${closeCount} closing`,
+          source: 'hql'
+        });
+      }
       
     } catch (e) {
       // Parse error - add diagnostic
@@ -734,50 +790,14 @@ connection.languages.semanticTokens.on((params: SemanticTokensParams) => {
     const text = document.getText();
     const builder = new SemanticTokensBuilder();
     
-    // This is where you would parse the document and add tokens
-    // based on your language's semantic rules
-    
-    // Example: Add tokens for keywords
-    const keywordRegex = /\b(let|var|fn|fx|if|cond|when|unless|do|loop|recur|for|while|repeat|defmacro|macro|class|struct|enum|import|export|true|false|nil)\b/g;
-    let match;
-    while ((match = keywordRegex.exec(text)) !== null) {
-      const startPos = document.positionAt(match.index);
-      builder.push(
-        startPos.line,
-        startPos.character,
-        match[0].length,
-        0, // token type: 'keyword'
-        0  // token modifiers
-      );
+    // Parse the document to generate semantic tokens
+    try {
+      const expressions = parse(text);
+      processExpressions(expressions, document, builder);
+    } catch (error) {
+      // If parsing fails, still try to add tokens for basic syntax
+      addBasicTokens(text, document, builder);
     }
-    
-    // Example: Add tokens for strings
-    const stringRegex = /"(?:[^"\\]|\\.)*"/g;
-    while ((match = stringRegex.exec(text)) !== null) {
-      const startPos = document.positionAt(match.index);
-      builder.push(
-        startPos.line,
-        startPos.character,
-        match[0].length,
-        1, // token type: 'string'
-        0  // token modifiers
-      );
-    }
-    
-    // Example: Add tokens for numbers
-    const numberRegex = /-?\b\d+(\.\d+)?\b/g;
-    while ((match = numberRegex.exec(text)) !== null) {
-      const startPos = document.positionAt(match.index);
-      builder.push(
-        startPos.line,
-        startPos.character,
-        match[0].length,
-        3, // token type: 'number'
-        0  // token modifiers
-      );
-    }
-    
-    // Add more token types as needed
     
     return builder.build();
   } catch (error) {
@@ -786,12 +806,177 @@ connection.languages.semanticTokens.on((params: SemanticTokensParams) => {
   }
 });
 
-// Function for converting VSCode Range to LSP Range
-function vsRangeToLspRange(range: Range): Range {
-  return Range.create(
-    Position.create(range.start.line, range.start.character),
-    Position.create(range.end.line, range.end.character)
-  );
+/**
+ * Process parsed expressions to add semantic tokens
+ */
+function processExpressions(expressions: SExp[], document: TextDocument, builder: SemanticTokensBuilder): void {
+  const text = document.getText();
+  // Recursively process expressions to add tokens
+  for (const expr of expressions) {
+    if (isList(expr)) {
+      // Process list expressions
+      const adaptedDoc = createTextDocumentAdapter(document);
+      const range = findExpressionRange(adaptedDoc, expr);
+      
+      // Check if it's a special form
+      if (expr.elements.length > 0 && isSymbol(expr.elements[0])) {
+        const firstSymbol = expr.elements[0] as SSymbol;
+        const symbolName = firstSymbol.name;
+        
+        // Add token for the symbol - special highlight for keywords
+        const symbolPos = document.positionAt(document.offsetAt(range.start) + 1);
+        
+        if (['fn', 'fx', 'let', 'var', 'if', 'cond', 'when', 'class', 'enum', 'return'].includes(symbolName)) {
+          // Keywords
+          builder.push(
+            symbolPos.line,
+            symbolPos.character,
+            symbolName.length,
+            0, // 'keyword'
+            0
+          );
+        } else {
+          // Function calls
+          builder.push(
+            symbolPos.line,
+            symbolPos.character,
+            symbolName.length,
+            12, // 'function'
+            0
+          );
+        }
+        
+        // Process arguments based on the type of form
+        if (symbolName === 'fn' || symbolName === 'fx') {
+          // Handle function definitions
+          if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
+            const fnNameSymbol = expr.elements[1] as SSymbol;
+            const fnNamePos = document.positionAt(
+              document.offsetAt(range.start) + 1 + symbolName.length + 1 + (text.substring(document.offsetAt(range.start) + 1 + symbolName.length, document.offsetAt(range.start) + 1 + symbolName.length + 1 + fnNameSymbol.name.length).match(/^\s+/) || [''])[0].length
+            );
+            
+            builder.push(
+              fnNamePos.line,
+              fnNamePos.character,
+              fnNameSymbol.name.length,
+              12, // 'function'
+              1  // 'declaration'
+            );
+          }
+        } else if (symbolName === 'let' || symbolName === 'var') {
+          // Handle variable definitions
+          if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
+            const varNameSymbol = expr.elements[1] as SSymbol;
+            const varNamePos = document.positionAt(
+              document.offsetAt(range.start) + 1 + symbolName.length + 1 + (text.substring(document.offsetAt(range.start) + 1 + symbolName.length, document.offsetAt(range.start) + 1 + symbolName.length + 1 + varNameSymbol.name.length).match(/^\s+/) || [''])[0].length
+            );
+            
+            builder.push(
+              varNamePos.line,
+              varNamePos.character,
+              varNameSymbol.name.length,
+              13, // 'variable'
+              1  // 'declaration'
+            );
+          }
+        }
+      }
+      
+      // Recursively process elements
+      for (const element of expr.elements) {
+        if (isList(element)) {
+          processExpressions([element], document, builder);
+        } else if (isString(element)) {
+          const stringRange = findExpressionRange(adaptedDoc, element);
+          const startPos = document.positionAt(document.offsetAt(stringRange.start));
+          
+          builder.push(
+            startPos.line,
+            startPos.character,
+            document.offsetAt(stringRange.end) - document.offsetAt(stringRange.start),
+            1, // 'string'
+            0
+          );
+        } else if (isNumber(element)) {
+          const numRange = findExpressionRange(adaptedDoc, element);
+          const startPos = document.positionAt(document.offsetAt(numRange.start));
+          
+          builder.push(
+            startPos.line,
+            startPos.character,
+            document.offsetAt(numRange.end) - document.offsetAt(numRange.start),
+            3, // 'number'
+            0
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Add basic tokens for syntax highlighting when parsing fails
+ */
+function addBasicTokens(text: string, document: TextDocument, builder: SemanticTokensBuilder): void {
+  // Add tokens for keywords
+  const keywordRegex = /\b(let|var|fn|fx|if|cond|when|unless|do|loop|recur|for|while|repeat|defmacro|macro|class|struct|enum|import|export|return|true|false|nil)\b/g;
+  let match;
+  while ((match = keywordRegex.exec(text)) !== null) {
+    const startPos = document.positionAt(match.index);
+    builder.push(
+      startPos.line,
+      startPos.character,
+      match[0].length,
+      0, // token type: 'keyword'
+      0  // token modifiers
+    );
+  }
+  
+  // Add tokens for strings
+  const stringRegex = /"(?:[^"\\]|\\.)*"/g;
+  while ((match = stringRegex.exec(text)) !== null) {
+    const startPos = document.positionAt(match.index);
+    builder.push(
+      startPos.line,
+      startPos.character,
+      match[0].length,
+      1, // token type: 'string'
+      0  // token modifiers
+    );
+  }
+  
+  // Add tokens for numbers
+  const numberRegex = /-?\b\d+(\.\d+)?\b/g;
+  while ((match = numberRegex.exec(text)) !== null) {
+    const startPos = document.positionAt(match.index);
+    builder.push(
+      startPos.line,
+      startPos.character,
+      match[0].length,
+      3, // token type: 'number'
+      0  // token modifiers
+    );
+  }
+  
+  // Add tokens for comments
+  const commentRegex = /(;.*)|(\/\/.*)|\/\*[\s\S]*?\*\//g;
+  while ((match = commentRegex.exec(text)) !== null) {
+    const startPos = document.positionAt(match.index);
+    const lines = match[0].split("\n");
+    
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].length > 0) {
+        const linePos = document.positionAt(match.index + match[0].split("\n").slice(0, i).join("\n").length);
+        builder.push(
+          linePos.line,
+          linePos.character,
+          lines[i].length,
+          0, // token type: 'comment'
+          0  // token modifiers
+        );
+      }
+    }
+  }
 }
 
 // Function for creating Position objects
