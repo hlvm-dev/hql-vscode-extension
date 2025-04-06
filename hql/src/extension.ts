@@ -6,9 +6,9 @@ import {
   ServerOptions,
   TransportKind
 } from "vscode-languageclient/node";
-import { getExpressionRange, getOutermostExpressionRange } from "./helper/getExpressionRange";
-import { showInlineEvaluation, showInlineError, clearInlineDecorations, applyRainbowParentheses } from "./ui";
-import { fetchEvaluation } from "./client";
+import { ui } from "./ui-manager";
+import { config } from "./config-manager";
+import { evaluator } from "./evaluation-manager";
 import { startServer, stopServer, restartServer, isServerRunning } from './server-manager';
 import { Logger } from './logger';
 import { activateParedit } from './paredit';
@@ -16,179 +16,8 @@ import { activateParedit } from './paredit';
 // Create a logger instance
 const logger = new Logger(true);
 
-// Track active evaluation requests to support cancellation
-let activeEvaluations: Map<string, AbortController> = new Map();
 let client: LanguageClient;
 let statusBarItem: vscode.StatusBarItem;
-
-/**
- * Evaluate the current expression under cursor
- */
-async function evaluateExpression() {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    vscode.window.showErrorMessage("No active editor found.");
-    return;
-  }
-  const doc = editor.document;
-  const range = editor.selection.isEmpty
-    ? getExpressionRange(doc, editor.selection.active)
-    : editor.selection;
-  
-  // Convert the range to a vscode.Range if it's not already
-  const vsCodeRange = range instanceof vscode.Range 
-    ? range 
-    : new vscode.Range(
-        new vscode.Position(range.start.line, range.start.character),
-        new vscode.Position(range.end.line, range.end.character)
-      );
-  
-  const code = doc.getText(vsCodeRange);
-  if (!code.trim()) {
-    vscode.window.showInformationMessage("No expression found to evaluate.");
-    return;
-  }
-
-  // Show a "busy" indicator immediately
-  showInlineEvaluation(editor, vsCodeRange, "Evaluating...");
-  
-  // Create an AbortController for this request
-  const abortController = new AbortController();
-  const requestId = `${doc.uri.toString()}:${vsCodeRange.start.line}:${vsCodeRange.start.character}`;
-  activeEvaluations.set(requestId, abortController);
-  
-  try {
-    // Check if the REPL server is running
-    if (!await isServerRunning()) {
-      const startResponse = await vscode.window.showInformationMessage(
-        "HQL REPL server is not running. Do you want to start it?",
-        "Yes", "No"
-      );
-      
-      if (startResponse === "Yes") {
-        await startServer();
-      } else {
-        showInlineError(editor, vsCodeRange, "REPL server not running");
-        activeEvaluations.delete(requestId);
-        return;
-      }
-    }
-    
-    const serverUrl = vscode.workspace.getConfiguration('hql').get<string>('server.url', 'http://localhost:5100');
-    const result = await fetchEvaluation(code, serverUrl, abortController.signal);
-    if (!activeEvaluations.has(requestId)) {
-      // This request was canceled, don't show the result
-      return;
-    }
-    
-    showInlineEvaluation(editor, vsCodeRange, result);
-    logger.debug(`Evaluated expression: ${code} => ${result}`);
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      // Request was canceled, don't show error
-      return;
-    }
-    
-    showInlineError(editor, vsCodeRange, err.message || String(err));
-    vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
-    logger.error(`Evaluation error: ${err.message || err}`);
-  } finally {
-    activeEvaluations.delete(requestId);
-  }
-}
-
-/**
- * Evaluate the outermost expression containing the cursor
- */
-async function evaluateOutermostExpression() {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    vscode.window.showErrorMessage("No active editor found.");
-    return;
-  }
-  const doc = editor.document;
-  const lspRange = editor.selection.isEmpty
-    ? getOutermostExpressionRange(doc, editor.selection.active)
-    : editor.selection;
-  
-  // Convert the LSP range to a VS Code range
-  const vsCodeRange = new vscode.Range(
-    new vscode.Position(lspRange.start.line, lspRange.start.character),
-    new vscode.Position(lspRange.end.line, lspRange.end.character)
-  );
-  
-  const code = doc.getText(vsCodeRange);
-  if (!code.trim()) {
-    vscode.window.showInformationMessage("No expression found to evaluate.");
-    return;
-  }
-
-  // Show a "busy" indicator immediately
-  showInlineEvaluation(editor, vsCodeRange, "Evaluating...");
-  
-  // Create an AbortController for this request
-  const abortController = new AbortController();
-  const requestId = `${doc.uri.toString()}:${vsCodeRange.start.line}:${vsCodeRange.start.character}`;
-  activeEvaluations.set(requestId, abortController);
-  
-  try {
-    // Check if the REPL server is running
-    if (!await isServerRunning()) {
-      const startResponse = await vscode.window.showInformationMessage(
-        "HQL REPL server is not running. Do you want to start it?",
-        "Yes", "No"
-      );
-      
-      if (startResponse === "Yes") {
-        await startServer();
-      } else {
-        showInlineError(editor, vsCodeRange, "REPL server not running");
-        activeEvaluations.delete(requestId);
-        return;
-      }
-    }
-    
-    const serverUrl = vscode.workspace.getConfiguration('hql').get<string>('server.url', 'http://localhost:5100');
-    const result = await fetchEvaluation(code, serverUrl, abortController.signal);
-    if (!activeEvaluations.has(requestId)) {
-      // This request was canceled, don't show the result
-      return;
-    }
-    
-    showInlineEvaluation(editor, vsCodeRange, result);
-    logger.debug(`Evaluated outermost expression: ${code} => ${result}`);
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      // Request was canceled, don't show error
-      return;
-    }
-    
-    showInlineError(editor, vsCodeRange, err.message || String(err));
-    vscode.window.showErrorMessage(`Evaluation Error: ${err.message || err}`);
-    logger.error(`Evaluation error: ${err.message || err}`);
-  } finally {
-    activeEvaluations.delete(requestId);
-  }
-}
-
-/**
- * Cancel all active evaluations
- */
-function cancelEvaluations() {
-  // Cancel all active requests
-  for (const [id, controller] of activeEvaluations.entries()) {
-    controller.abort();
-    activeEvaluations.delete(id);
-  }
-  
-  // Clear UI decorations
-  for (const ed of vscode.window.visibleTextEditors) {
-    clearInlineDecorations(ed.document);
-  }
-  
-  vscode.window.showInformationMessage("All evaluations canceled.");
-  logger.info("All evaluations canceled");
-}
 
 /**
  * Update the REPL server status in the status bar
@@ -244,9 +73,20 @@ export function activate(context: vscode.ExtensionContext) {
   logger.info("HQL Language Server started");
 
   // Register commands for evaluation
-  context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateExpression", evaluateExpression));
-  context.subscriptions.push(vscode.commands.registerCommand("hql.evaluateOutermostExpression", evaluateOutermostExpression));
-  context.subscriptions.push(vscode.commands.registerCommand("hql.cancelEvaluations", cancelEvaluations));
+  context.subscriptions.push(vscode.commands.registerCommand(
+    "hql.evaluateExpression", 
+    () => evaluator.evaluateExpression()
+  ));
+  
+  context.subscriptions.push(vscode.commands.registerCommand(
+    "hql.evaluateOutermostExpression", 
+    () => evaluator.evaluateOutermostExpression()
+  ));
+  
+  context.subscriptions.push(vscode.commands.registerCommand(
+    "hql.cancelEvaluations", 
+    () => evaluator.cancelAllEvaluations()
+  ));
 
   // Register REPL server commands
   context.subscriptions.push(vscode.commands.registerCommand('hql.startREPLServer', async () => {
@@ -272,12 +112,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(e => {
       if (e.document.languageId === 'hql') {
-        clearInlineDecorations(e.document);
+        ui.clearDecorations(e.document);
         
         // Reapply rainbow parentheses if enabled
-        const rainbowParensEnabled = vscode.workspace.getConfiguration('hql').get<boolean>('paredit.enabled', true);
-        if (rainbowParensEnabled && vscode.window.activeTextEditor?.document === e.document) {
-          applyRainbowParentheses(vscode.window.activeTextEditor);
+        if (config.isPareEditEnabled() && vscode.window.activeTextEditor?.document === e.document) {
+          ui.applyRainbowParentheses(vscode.window.activeTextEditor);
         }
       }
     })
@@ -287,9 +126,8 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(editor => {
       if (editor && editor.document.languageId === 'hql') {
-        const rainbowParensEnabled = vscode.workspace.getConfiguration('hql').get<boolean>('paredit.enabled', true);
-        if (rainbowParensEnabled) {
-          applyRainbowParentheses(editor);
+        if (config.isPareEditEnabled()) {
+          ui.applyRainbowParentheses(editor);
         }
       }
     })
@@ -363,7 +201,7 @@ export function activate(context: vscode.ExtensionContext) {
           // Add missing closing parentheses
           const missingCloseCount = openCount - closeCount;
           editBuilder.insert(document.positionAt(text.length), ')'.repeat(missingCloseCount));
-          vscode.window.showInformationMessage(`Added ${missingCloseCount} missing closing parenthese${missingCloseCount === 1 ? '' : 's'}`);
+          ui.showInfo(`Added ${missingCloseCount} missing closing parenthese${missingCloseCount === 1 ? '' : 's'}`);
         } else if (closeCount > openCount) {
           // Remove extra closing parentheses
           const extraCloseCount = closeCount - openCount;
@@ -380,9 +218,9 @@ export function activate(context: vscode.ExtensionContext) {
               lastPos--;
             }
           }
-          vscode.window.showInformationMessage(`Removed ${extraCloseCount} extra closing parenthese${extraCloseCount === 1 ? '' : 's'}`);
+          ui.showInfo(`Removed ${extraCloseCount} extra closing parenthese${extraCloseCount === 1 ? '' : 's'}`);
         } else {
-          vscode.window.showInformationMessage('Parentheses are already balanced.');
+          ui.showInfo('Parentheses are already balanced.');
         }
       });
     })
@@ -472,17 +310,16 @@ export function activate(context: vscode.ExtensionContext) {
   activateParedit(context);
   
   // Optional: Auto-start the server if configured
-  const autoStart = vscode.workspace.getConfiguration('hql').get('server.autoStart', false);
-  if (autoStart) {
+  if (config.shouldAutoStartServer()) {
     startServer()
       .then(() => updateServerStatus())
       .catch(err => {
-        vscode.window.showErrorMessage(`Failed to auto-start HQL server: ${err}`);
+        ui.showError(`Failed to auto-start HQL server: ${err}`);
       });
   }
   
   // Notify user that the extension is ready
-  vscode.window.showInformationMessage('HQL extension activated with enhanced syntax support');
+  ui.showInfo('HQL extension activated with enhanced syntax support');
   logger.info('HQL extension activated successfully');
 }
 
@@ -490,7 +327,7 @@ export function deactivate(): Thenable<void> | undefined {
   logger.info('Deactivating HQL extension');
   
   // Clear any evaluations
-  cancelEvaluations();
+  evaluator.cancelAllEvaluations();
   
   // Stop the server
   stopServer().catch(err => {
