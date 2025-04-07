@@ -175,9 +175,24 @@
         "when": "editorLangId == hql && editorTextFocus"
       },
       {
+        "command": "hideSuggestWidget",
+        "key": "escape",
+        "when": "suggestWidgetVisible && editorLangId == hql"
+      },
+      {
+        "command": "editor.action.inlineSuggest.hide",
+        "key": "escape",
+        "when": "inlineSuggestionVisible && editorLangId == hql"
+      },
+      {
         "command": "hql.cancelEvaluations",
         "key": "escape",
-        "when": "editorLangId == hql && editorTextFocus"
+        "when": "editorLangId == hql && editorTextFocus && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "hideSuggestWidget",
+        "key": "escape",
+        "when": "editorLangId == hql && editorTextFocus && inlineSuggestionVisible"
       },
       {
         "command": "hql.formatDocument",

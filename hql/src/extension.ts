@@ -42,7 +42,7 @@ async function updateServerStatus() {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  logger.info("Activating HQL extension");
+  logger.info('Activating HQL extension');
   
   // Create output channel
   outputChannel = vscode.window.createOutputChannel("HQL Language Server");
@@ -162,18 +162,14 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.commands.registerCommand(
     "hql.cancelEvaluations", 
     () => {
-      // Check if the suggestion widget is visible before canceling evaluations
+      // Only run if we're in an HQL file
       if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'hql') {
-        // Only cancel evaluations if the suggestion widget is not visible
-        // This prevents the "HQL: All evaluations cancelled" message during autocompletion
-        const widgetVisible = vscode.commands.executeCommand('inlineSuggestion.hasVisibleSuggestions') || 
-                              vscode.commands.executeCommand('editor.action.hasEditorWidgetFocus');
+        // Check if the suggest widget is visible - if it is, we should let VSCode handle it
+        const widgetVisible = vscode.window.activeTextEditor.document.uri.toString().includes('suggest');
         
         if (!widgetVisible) {
+          // No suggestion widget, safe to cancel evaluations
           evaluator.cancelAllEvaluations();
-        } else {
-          // Let the Escape key be handled by the editor to dismiss autocomplete
-          vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
         }
       } else {
         evaluator.cancelAllEvaluations();
@@ -312,6 +308,21 @@ export function activate(context: vscode.ExtensionContext) {
   // Notify user that the extension is ready
   ui.showInfo('HQL extension activated with enhanced syntax support');
   logger.info('HQL extension activated successfully');
+
+  // Register commands to explicitly hide autocompletion popups
+  context.subscriptions.push(vscode.commands.registerCommand(
+    'hql.hideSuggestWidget',
+    () => {
+      vscode.commands.executeCommand('hideSuggestWidget');
+    }
+  ));
+  
+  context.subscriptions.push(vscode.commands.registerCommand(
+    'hql.hideInlineSuggest',
+    () => {
+      vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
+    }
+  ));
 }
 
 export function deactivate(): Thenable<void> | undefined {

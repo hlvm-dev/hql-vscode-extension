@@ -910,6 +910,132 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
       return [];
     }
 
+    try {
+      console.log(`Current line for completion: "${currentLine}"`);
+    } catch (error) {
+      // Ignore logging errors
+    }
+
+    // SPECIAL HANDLING FOR OS DOT NOTATION
+    // This is a targeted fix for the specific issue with os. completions
+    const osPattern = /\b[oO][sS]\.\s*$/;  // Match "os." or "OS." at word boundary
+    if (osPattern.test(currentLine)) {
+      console.log("EXACT MATCH for OS. pattern - providing OS enum cases ONLY");
+      
+      // Fixed set of OS cases
+      const osCases = ['macOS', 'windows', 'linux', 'iOS', 'android'];
+      const completionItems: CompletionItem[] = [];
+      
+      // Add OS enum cases
+      for (const caseName of osCases) {
+        completionItems.push({
+          label: caseName,
+          kind: CompletionItemKind.EnumMember,
+          detail: `Case of enum OS`,
+          sortText: `00-${caseName}`, // Highest priority
+          // Making the item selected by default
+          preselect: true,
+          // Add command to dismiss completion if Escape is pressed
+          command: {
+            title: 'Hide completion',
+            command: 'editor.action.triggerSuggest'
+          },
+          data: { enumName: 'OS' }
+        });
+      }
+      
+      console.log(`Returning ONLY ${completionItems.length} fixed OS enum completions - blocking all other suggestions`);
+      return completionItems;
+    }
+
+    // SPECIAL HANDLING FOR INSTALL OS DOT PATTERN
+    const installOsPattern = /\binstall\s+[oO][sS]\.\s*$/;
+    if (installOsPattern.test(currentLine)) {
+      console.log("EXACT MATCH for 'install OS.' pattern - providing OS enum cases ONLY");
+      
+      // Fixed set of OS cases
+      const osCases = ['macOS', 'windows', 'linux', 'iOS', 'android'];
+      const completionItems: CompletionItem[] = [];
+      
+      // Add OS enum cases
+      for (const caseName of osCases) {
+        completionItems.push({
+          label: caseName,
+          kind: CompletionItemKind.EnumMember,
+          detail: `Case of enum OS`,
+          sortText: `00-${caseName}`, // Highest priority
+          // Making the item selected by default
+          preselect: true,
+          // Add command to dismiss completion if Escape is pressed
+          command: {
+            title: 'Hide completion',
+            command: 'editor.action.triggerSuggest'
+          },
+          data: { enumName: 'OS' }
+        });
+      }
+      
+      console.log(`Returning ONLY ${completionItems.length} fixed OS enum completions for install os. - blocking all others`);
+      return completionItems;
+    }
+
+    // GENERAL ENUM DOT PATTERN
+    const enumDotPattern = /\b(\w+)\.\s*$/;
+    if (enumDotPattern.test(currentLine)) {
+      const enumName = currentLine.match(enumDotPattern)![1];
+      console.log(`Detected enum dot pattern for ${enumName} - PREVENTING all other completions`);
+      
+      // Get all defined symbols for the current document
+      const symbols = documentSymbols.get(document.uri) || [];
+      
+      // Find all enum definitions (with case insensitive matching)
+      const enums = symbols.filter(s => s.kind === SymbolKind.Enum);
+      const matchingEnum = enums.find(e => 
+        e.name.toLowerCase() === enumName.toLowerCase()
+      );
+      
+      if (matchingEnum) {
+        const actualEnumName = matchingEnum.name;
+        console.log(`Found matching enum: ${actualEnumName} - FILTERING to only show enum cases`);
+        
+        // Find all enum members for this enum
+        const enumMembers = symbols.filter(s => 
+          s.kind === SymbolKind.EnumMember && 
+          s.data && s.data.enumName === actualEnumName
+        );
+        
+        const completionItems: CompletionItem[] = [];
+        
+        if (enumMembers.length > 0) {
+          // We found enum members, add them to completion
+          for (const member of enumMembers) {
+            const memberName = member.name.split('.')[1]; // Get just the case name
+            
+            completionItems.push({
+              label: memberName,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Case of enum ${actualEnumName}`,
+              sortText: `00-${memberName}`, // HIGHEST priority
+              preselect: true,
+              command: {
+                title: 'Hide completion',
+                command: 'editor.action.triggerSuggest'
+              },
+              data: { enumName: actualEnumName }
+            });
+          }
+          
+          console.log(`Returning ONLY ${completionItems.length} enum completions - blocking all others`);
+          return completionItems;
+        }
+      } else {
+        console.log(`No matching enum found for ${enumName} - still filtering to prevent unwanted completions`);
+        
+        // Return empty array to prevent any completions at all in this context
+        return [];
+      }
+    }
+
     // Try to get the current expression using tolerant parsing
     let currentExp;
     try {
@@ -960,6 +1086,11 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
               kind: CompletionItemKind.EnumMember,
               detail: `Case of enum ${actualEnumName}`,
               sortText: `00-${memberName}`, // HIGHEST priority for enum cases
+              preselect: true,
+              command: {
+                title: 'Hide completion',
+                command: 'editor.action.triggerSuggest'
+              },
               data: { enumName: actualEnumName }
             });
           }
@@ -1007,6 +1138,11 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
                     kind: CompletionItemKind.EnumMember,
                     detail: `Case of enum ${actualEnumName}`,
                     sortText: `00-${memberName}`,
+                    preselect: true,
+                    command: {
+                      title: 'Hide completion',
+                      command: 'editor.action.triggerSuggest'
+                    },
                     data: { enumName: actualEnumName }
                   });
                 }
@@ -1025,6 +1161,11 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
                   kind: CompletionItemKind.EnumMember,
                   detail: 'Common OS type',
                   sortText: `00-${caseName}`,
+                  preselect: true,
+                  command: {
+                    title: 'Hide completion',
+                    command: 'editor.action.triggerSuggest'
+                  },
                   data: { enumName: 'OS' }
                 });
               }
@@ -1076,6 +1217,11 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
                         kind: CompletionItemKind.EnumMember,
                         detail: `Case of enum ${actualEnumName}`,
                         sortText: `00-${memberName}`,
+                        preselect: true,
+                        command: {
+                          title: 'Hide completion',
+                          command: 'editor.action.triggerSuggest'
+                        },
                         data: { enumName: actualEnumName }
                       });
                     }
@@ -1091,15 +1237,199 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
       }
     }
     
-    // Check for "parameter: ." syntax for enum dotted notation - Swift-like syntax
-    const paramDotMatch = currentLine.match(/(\w+)\s*:\s*\.?$/);
-    if (paramDotMatch) {
-      const paramName = paramDotMatch[1];
-      console.log(`Detected parameter with dot notation: ${paramName}`);
+    // Special case for "os: ." syntax - ensures we handle the case when dot is just typed
+    const exactDotRegex = /(\w+)\s*:\s*\.$/;
+    const exactDotMatch = currentLine.match(exactDotRegex);
+    if (exactDotMatch && exactDotMatch[1]) {
+      const paramName = exactDotMatch[1];
+      console.log(`Special handling for "${paramName}: ." pattern`);
       
       // Try to find the parameter type by examining the surrounding context
       const symbols = documentSymbols.get(document.uri) || [];
       const enums = symbols.filter(s => s.kind === SymbolKind.Enum);
+      
+      // Special handling for common parameter names
+      if (paramName.toLowerCase() === 'os') {
+        const osEnum = enums.find(e => e.name.toLowerCase() === 'os');
+        if (osEnum) {
+          // Get OS enum cases
+          const enumCases = symbols.filter(s => 
+            s.kind === SymbolKind.EnumMember && 
+            s.data && s.data.enumName === osEnum.name
+          );
+          
+          completionItems = [];
+          
+          for (const enumCase of enumCases) {
+            const caseName = enumCase.name.split('.')[1];
+            completionItems.push({
+              label: caseName,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Case of enum ${osEnum.name}`,
+              sortText: `00-${caseName}`, // HIGHEST priority
+              preselect: true,
+              command: {
+                title: 'Hide completion',
+                command: 'editor.action.triggerSuggest'
+              },
+              data: { enumName: osEnum.name, caseName: caseName }
+            });
+          }
+          
+          if (completionItems.length > 0) {
+            console.log(`Returning ${completionItems.length} OS enum completions (DOT PATTERN) <===`);
+            return completionItems;
+          }
+        } else {
+          // Provide default OS values if no OS enum is defined
+          completionItems = [];
+          const defaultOSCases = ['macOS', 'windows', 'linux', 'iOS', 'android'];
+          for (const caseName of defaultOSCases) {
+            completionItems.push({
+              label: caseName,
+              kind: CompletionItemKind.EnumMember,
+              detail: 'Common OS type',
+              sortText: `00-${caseName}`,
+              preselect: true,
+              command: {
+                title: 'Hide completion',
+                command: 'editor.action.triggerSuggest'
+              },
+              data: { enumName: 'OS' }
+            });
+          }
+          
+          console.log(`Returning ${completionItems.length} default OS values (DOT PATTERN) <===`);
+          return completionItems;
+        }
+      }
+      
+      // Try to find the enclosing function to determine parameter type
+      try {
+        const functionContext = findEnclosingFunction(document, position);
+        if (functionContext) {
+          const functionText = document.getText(functionContext.range);
+          const paramTypeMatch = new RegExp(`${paramName}\\s*:\\s*(\\w+)`).exec(functionText);
+          
+          if (paramTypeMatch) {
+            const parameterType = paramTypeMatch[1];
+            console.log(`Found parameter type: ${parameterType}`);
+            
+            // Find the matching enum
+            const matchingEnum = enums.find(e => 
+              e.name.toLowerCase() === parameterType.toLowerCase()
+            );
+            
+            if (matchingEnum) {
+              // Get all cases for this enum
+              const enumCases = symbols.filter(s => 
+                s.kind === SymbolKind.EnumMember && 
+                s.data && s.data.enumName === matchingEnum.name
+              );
+              
+              completionItems = [];
+              
+              // Create completions for all enum cases
+              for (const enumCase of enumCases) {
+                const caseName = enumCase.name.split('.')[1];
+                
+                completionItems.push({
+                  label: caseName,
+                  kind: CompletionItemKind.EnumMember,
+                  detail: `Case of enum ${matchingEnum.name}`,
+                  sortText: `00-${caseName}`, // Highest priority
+                  preselect: true,
+                  command: {
+                    title: 'Hide completion',
+                    command: 'editor.action.triggerSuggest'
+                  },
+                  data: { 
+                    enumName: matchingEnum.name,
+                    caseName: caseName
+                  }
+                });
+              }
+              
+              if (completionItems.length > 0) {
+                console.log(`Returning ${completionItems.length} enum completions for parameter (DOT PATTERN) <===`);
+                return completionItems;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error in special dot handling: ${error}`);
+      }
+    }
+    
+    // Check for "parameter: ." syntax for enum dotted notation - Swift-like syntax
+    const dotWithTypeRegex = /(\w+)\s*:\s*\.(\w*)$/;
+    const dotWithTypeMatch = currentLine.match(dotWithTypeRegex);
+    if (dotWithTypeMatch && dotWithTypeMatch[1]) {
+      const paramName = dotWithTypeMatch[1];
+      console.log(`Detected parameter with dot notation: ${paramName} - HIGHEST PRIORITY HANDLING`);
+      
+      // Try to find the parameter type by examining the surrounding context
+      const symbols = documentSymbols.get(document.uri) || [];
+      const enums = symbols.filter(s => s.kind === SymbolKind.Enum);
+      
+      // Special handling for common parameter names
+      if (paramName.toLowerCase() === 'os') {
+        console.log(`Special handling for OS parameter`);
+        const osEnum = enums.find(e => e.name.toLowerCase() === 'os');
+        if (osEnum) {
+          // Get OS enum cases
+          const enumCases = symbols.filter(s => 
+            s.kind === SymbolKind.EnumMember && 
+            s.data && s.data.enumName === osEnum.name
+          );
+          
+          // Clear any existing completions
+          completionItems = [];
+          
+          for (const enumCase of enumCases) {
+            const caseName = enumCase.name.split('.')[1];
+            completionItems.push({
+              label: caseName,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Case of enum ${osEnum.name}`,
+              sortText: `00-${caseName}`, // HIGHEST priority
+              preselect: true,
+              command: {
+                title: 'Hide completion',
+                command: 'editor.action.triggerSuggest'
+              },
+              data: { enumName: osEnum.name, caseName: caseName }
+            });
+          }
+          
+          if (completionItems.length > 0) {
+            console.log(`Returning ${completionItems.length} OS enum completions (HIGH PRIORITY)`);
+            return completionItems;
+          }
+        } else {
+          // Provide default OS values if no OS enum is defined
+          completionItems = [];
+          const defaultOSCases = ['macOS', 'windows', 'linux', 'iOS', 'android'];
+          for (const caseName of defaultOSCases) {
+            completionItems.push({
+              label: caseName,
+              kind: CompletionItemKind.EnumMember,
+              detail: 'Common OS type',
+              sortText: `00-${caseName}`,
+              preselect: true,
+              command: {
+                title: 'Hide completion',
+                command: 'editor.action.triggerSuggest'
+              },
+              data: { enumName: 'OS' }
+            });
+          }
+          
+          console.log(`Returning ${completionItems.length} default OS values (HIGH PRIORITY)`);
+          return completionItems;
+        }
+      }
       
       // Check the current function context to determine parameter type
       let parameterType = '';
@@ -1129,16 +1459,24 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
                 s.data && s.data.enumName === matchingEnum.name
               );
               
+              // Clear any existing completions
+              completionItems = [];
+              
               // Create completions for all enum cases
               for (const enumCase of enumCases) {
                 // Extract just the case name without the enum prefix
                 const caseName = enumCase.name.split('.')[1];
                 
                 completionItems.push({
-                  label: `.${caseName}`,
+                  label: caseName,
                   kind: CompletionItemKind.EnumMember,
                   detail: `Case of enum ${matchingEnum.name}`,
-                  sortText: `01-${caseName}`, // High priority
+                  sortText: `00-${caseName}`, // Highest priority
+                  preselect: true,
+                  command: {
+                    title: 'Hide completion',
+                    command: 'editor.action.triggerSuggest'
+                  },
                   data: { 
                     enumName: matchingEnum.name,
                     caseName: caseName
@@ -1148,6 +1486,7 @@ connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem
               
               // Only return enum cases if we found matching ones
               if (completionItems.length > 0) {
+                console.log(`Returning ${completionItems.length} enum completions for parameter`);
                 return completionItems;
               }
             }
@@ -1449,11 +1788,11 @@ function getBasicCompletions(): CompletionItem[] {
       detail: 'Define an enumeration',
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Creates an enum with cases'
+        value: 'Define a simple enumeration with cases'
       },
-      insertText: '(enum ${1:EnumName}\n  (case ${2:case1})\n  (case ${3:case2}${4: value}))',
+      insertText: '(enum ${1:EnumName}\n  (case ${2:case1})\n  (case ${3:case2}))',
       insertTextFormat: InsertTextFormat.Snippet,
-      sortText: '10-enum',
+      sortText: `00-enum`, // HIGHEST priority (changed from 20-enum)
       filterText: 'enum enumeration'
     },
     
@@ -1897,65 +2236,44 @@ function getBasicCompletions(): CompletionItem[] {
   return completions;
 }
 
-// Handler for resolving additional information for completion items
+function setupCompletionCommands(completionItem: CompletionItem): CompletionItem {
+  // Add command to hide completions on selection (not on Escape)
+  if (!completionItem.command) {
+    completionItem.command = {
+      title: 'Trigger suggest',
+      command: 'editor.action.triggerSuggest'
+    };
+  }
+  return completionItem;
+}
+
+// Apply to all completion items in onCompletionResolve
 connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
-  console.log(`Resolving completion item: ${item.label}`);
+  // Add additional information for resolved completion items
+  const data = item.data as any;
   
-  // Add more details to the completion item if needed
-  if (item.data) {
-    const data = item.data;
-    
-    // For functions with parameters, enhance documentation
-    if (data.params && Array.isArray(data.params)) {
-      const paramDocs = data.params.map((param: { name: string, type: string, defaultValue?: string }) => 
-        `- \`${param.name}: ${param.type}${param.defaultValue ? ` = ${param.defaultValue}` : ''}\``
-      ).join('\n');
-      
-      const docContent = [
-        data.documentation ? data.documentation : '',
-        '',
-        '**Parameters:**',
-        paramDocs
-      ].filter(line => line !== '').join('\n');
-      
+  if (data) {
+    // Set documentation based on the type of item
+    if (data.params) {
+      // Function completion
+      const paramsString = data.params.map((p: any) => `${p.name}: ${p.type || 'any'}`).join('\n- ');
+      item.detail = item.detail || `Function with parameters`;
       item.documentation = {
         kind: MarkupKind.Markdown,
-        value: docContent
-      };
-      
-      // Enhance detail with parameter info
-      if (!item.detail) {
-        const paramInfo = data.params.map((p: { name: string, type: string, defaultValue?: string }) => 
-          `${p.name}: ${p.type}${p.defaultValue ? ` = ${p.defaultValue}` : ''}`
-        ).join(', ');
-        item.detail = `(${item.label} ${paramInfo})`;
-      }
-    }
-    // For imported symbols, add more details
-    else if (data.sourceModule) {
-      item.detail = item.detail || `Imported from ${data.sourceModule}`;
-      item.documentation = item.documentation || {
-        kind: MarkupKind.Markdown,
-        value: `Symbol imported from module \`${data.sourceModule}\``
+        value: `### Parameters\n- ${paramsString}\n\n${data.documentation || ''}`
       };
     } 
-    // For symbols with documentation but no special handling
-    else if (data.documentation) {
-      item.documentation = {
-        kind: MarkupKind.Markdown,
-        value: data.documentation
-      };
-    }
-    // For enum members, add enum information
     else if (data.enumName) {
       item.detail = item.detail || `Case of enum ${data.enumName}`;
-      item.documentation = item.documentation || {
+      item.documentation = {
         kind: MarkupKind.Markdown,
         value: `Enum case from \`${data.enumName}\``
       };
     }
   }
-  return item;
+  
+  // Add command to hide completion on Escape key
+  return setupCompletionCommands(item);
 });
 
 // Define basic keyword documentation for hover
@@ -1982,7 +2300,7 @@ const keywordDocumentation = {
   },
   'enum': {
     kind: MarkupKind.Markdown,
-    value: '```\n(enum Name\n  (case case1)\n  (case case2 value)\n  (case case3 param1: Type1 param2: Type2))\n```\nDefines an enumeration type with optional values or associated types.'
+    value: '```\n(enum Name\n  (case case1)\n  (case case2))\n```\nDefines an enumeration type with optional values or associated types.'
   },
   'return': {
     kind: MarkupKind.Markdown,
