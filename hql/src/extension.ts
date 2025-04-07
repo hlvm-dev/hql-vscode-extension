@@ -182,7 +182,7 @@ export function activate(context: vscode.ExtensionContext) {
       
       // Check if server module exists
       const fs = require('fs');
-      const serverModule = context.asAbsolutePath(path.join("out", "server", "lspServer.ts"));
+      const serverModule = context.asAbsolutePath(path.join("out", "server", "lspServer.js"));
       outputChannel.appendLine(`Server module path: ${serverModule}`);
       outputChannel.appendLine(`Server module exists: ${fs.existsSync(serverModule)}`);
       
@@ -244,7 +244,7 @@ export function activate(context: vscode.ExtensionContext) {
 // This method starts the language server
 function startLanguageServer(context: vscode.ExtensionContext): LanguageClient {
   // The server is implemented in Node
-  const serverModule = context.asAbsolutePath(path.join('out', 'server', 'lspServer.ts'));
+  const serverModule = context.asAbsolutePath(path.join('out', 'server', 'lspServer.js'));
   
   // If the extension is launched in debug mode then the debug server options are used
   // Otherwise the run options are used
@@ -321,7 +321,7 @@ function runDiagnostics(context: vscode.ExtensionContext): void {
     }
     
     // Check for the server file
-    const serverPath = context.asAbsolutePath(path.join("out", "server", "lspServer.ts"));
+    const serverPath = context.asAbsolutePath(path.join("out", "server", "lspServer.js"));
     const fs = require('fs');
     if (fs.existsSync(serverPath)) {
       diagnosticOutput.appendLine(`✅ Server module found at: ${serverPath}`);

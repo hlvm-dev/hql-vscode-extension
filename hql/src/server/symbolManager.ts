@@ -8,7 +8,7 @@ import {
   } from 'vscode-languageserver';
   
   import { parse, SExp, SList, SSymbol } from '../parser';
-  import { isList, isSymbol, isString, isNumber, isBoolean, isNil } from '../s-exp/types';
+  import { isList, isSymbol, isString, isNumber, isBoolean } from '../s-exp/types';
   import { createTextDocumentAdapter } from '../document-adapter';
   import { findExpressionRange } from '../helper/getExpressionRange';
   
@@ -43,7 +43,7 @@ import {
     /**
      * Get or add a document to the manager
      */
-    public async getDocument(uri: string): Promise<TextDocument | undefined> {
+    public getDocument(uri: string): TextDocument | undefined {
       return this.documents.get(uri);
     }
     
@@ -79,7 +79,7 @@ import {
     /**
      * Update symbols for a document
      */
-    public async updateDocumentSymbols(document: TextDocument): Promise<void> {
+    public updateDocumentSymbols(document: TextDocument): void {
       try {
         const text = document.getText();
         const uri = document.uri;
@@ -96,10 +96,8 @@ import {
           if (isList(expr) && expr.elements.length > 0) {
             const first = expr.elements[0];
             if (isSymbol(first)) {
-              const name = first.name;
-              
               // Extract documentation comment from above the expression
-              let documentation = this.extractDocumentation(document, expr, i > 0 ? expressions[i-1] : undefined);
+              const documentation = this.extractDocumentation(document, expr, i > 0 ? expressions[i-1] : undefined);
               
               // Handle different symbol types
               this.processExpression(document, expr, symbols, documentation);
@@ -143,7 +141,7 @@ import {
         // Look for comments (;; or ;) in the text between expressions
         const commentRegex = /^\s*;;(.*)$|^\s*;(.*)$/gm;
         let commentMatch;
-        let commentLines = [];
+        const commentLines = [];
         
         while ((commentMatch = commentRegex.exec(textBetween)) !== null) {
           const commentText = commentMatch[1] || commentMatch[2] || "";
@@ -153,7 +151,7 @@ import {
         if (commentLines.length > 0) {
           return commentLines.join("\n");
         }
-      } catch (error) {
+      } catch (_error) {
         // Ignore errors in documentation extraction
       }
       
@@ -221,67 +219,17 @@ import {
       
       if (!isSymbol(expr.elements[1])) return;
       
-      const funcName = (expr.elements[1] as SSymbol).name;
+      const funcNameSymbol = expr.elements[1];
+      let funcName = isSymbol(funcNameSymbol) ? funcNameSymbol.name : "anonymous";
       const location = Location.create(document.uri, range);
       
-      // Extract parameter info
-      let params: { name: string; type: string; defaultValue?: string }[] = [];
+      // Get parameter list (third element in function definition)
+      const paramList = expr.elements.length > 2 ? expr.elements[2] : null;
+      
+      // Extract parameters
+      const params: { name: string; type: string; defaultValue?: string }[] = [];
       let returnType = "Any";
       
-      if (expr.elements.length > 2 && isList(expr.elements[2])) {
-        const paramList = expr.elements[2] as SList;
-        for (let j = 0; j < paramList.elements.length; j++) {
-          if (isSymbol(paramList.elements[j])) {
-            let paramName = (paramList.elements[j] as SSymbol).name;
-            let paramType = "Any";
-            let defaultValue: string | undefined = undefined;
-            
-            // Check for type annotation (param: Type)
-            if (j + 2 < paramList.elements.length && 
-                isSymbol(paramList.elements[j+1]) && 
-                (paramList.elements[j+1] as SSymbol).name === ':' && 
-                isSymbol(paramList.elements[j+2])) {
-              paramType = (paramList.elements[j+2] as SSymbol).name;
-              j += 2; // Skip the ':' and type
-              
-              // Check for default value (param: Type = default)
-              if (j + 2 < paramList.elements.length && 
-                  isSymbol(paramList.elements[j+1]) && 
-                  (paramList.elements[j+1] as SSymbol).name === '=') {
-                // Extract default value
-                try {
-                  const defaultExpr = paramList.elements[j+2];
-                  defaultValue = this.serializeExpression(defaultExpr);
-                  j += 2; // Skip the '=' and default value
-                } catch (e) {
-                  // Ignore errors in default value serialization
-                }
-              }
-            }
-            // Check for default value without type (param = default)
-            else if (j + 2 < paramList.elements.length && 
-                     isSymbol(paramList.elements[j+1]) && 
-                     (paramList.elements[j+1] as SSymbol).name === '=') {
-              // Extract default value
-              try {
-                const defaultExpr = paramList.elements[j+2];
-                defaultValue = this.serializeExpression(defaultExpr);
-                j += 2; // Skip the '=' and default value
-              } catch (e) {
-                // Ignore errors in default value serialization
-              }
-            }
-            
-            params.push({ 
-              name: paramName, 
-              type: paramType,
-              defaultValue
-            });
-          }
-        }
-      }
-      
-      // Extract return type if present
       if (expr.elements.length > 3 && isList(expr.elements[3])) {
         const returnTypeList = expr.elements[3] as SList;
         if (returnTypeList.elements.length >= 2 && 
@@ -294,7 +242,7 @@ import {
       
       symbols.push({
         name: funcName,
-        kind: SymbolKind.Function,
+        kind: 12 as SymbolKind,
         location,
         data: {
           documentation,
@@ -333,7 +281,7 @@ import {
         
         symbols.push({
           name: varName,
-          kind: SymbolKind.Variable,
+          kind: 13 as SymbolKind,
           location,
           data: {
             documentation,
@@ -359,7 +307,7 @@ import {
             
             symbols.push({
               name: varName,
-              kind: SymbolKind.Variable,
+              kind: 13 as SymbolKind,
               location,
               data: {
                 documentation,
@@ -390,7 +338,7 @@ import {
       // Add class/struct symbol
       symbols.push({
         name: className,
-        kind: isClass ? SymbolKind.Class : SymbolKind.Struct,
+        kind: isClass ? 5 as SymbolKind : 23 as SymbolKind,
         location,
         data: {
           documentation
@@ -431,7 +379,7 @@ import {
           
           symbols.push({
             name: `${className}.${fieldName}`,
-            kind: SymbolKind.Field,
+            kind: 13 as SymbolKind,
             location: memberLocation,
             data: {
               type: fieldType
@@ -449,14 +397,13 @@ import {
           const memberLocation = Location.create(document.uri, memberRange);
           
           // Extract method parameters
-          let params: { name: string; type: string; defaultValue?: string }[] = [];
+          const params: { name: string; type: string; defaultValue?: string }[] = [];
           let returnType = "Any";
           
           if (memberList.elements.length > 2 && isList(memberList.elements[2])) {
             const paramList = memberList.elements[2] as SList;
             
             // Extract params similar to function definition
-            // (Code omitted for brevity - same as in processFunctionDefinition)
             for (let j = 0; j < paramList.elements.length; j++) {
               if (isSymbol(paramList.elements[j])) {
                 let paramName = (paramList.elements[j] as SSymbol).name;
@@ -509,7 +456,7 @@ import {
           
           symbols.push({
             name: `${className}.${methodName}`,
-            kind: SymbolKind.Method,
+            kind: 13 as SymbolKind,
             location: memberLocation,
             data: {
               params,
@@ -527,13 +474,12 @@ import {
           const memberLocation = Location.create(document.uri, memberRange);
           
           // Extract constructor parameters
-          let params: { name: string; type: string; defaultValue?: string }[] = [];
+          const params: { name: string; type: string; defaultValue?: string }[] = [];
           
           if (isList(memberList.elements[1])) {
             const paramList = memberList.elements[1] as SList;
             
             // Extract params similar to function definition
-            // (Same logic as above for methods)
             for (let j = 0; j < paramList.elements.length; j++) {
               if (isSymbol(paramList.elements[j])) {
                 let paramName = (paramList.elements[j] as SSymbol).name;
@@ -573,7 +519,7 @@ import {
           
           symbols.push({
             name: `${className}.constructor`,
-            kind: SymbolKind.Constructor,
+            kind: 13 as SymbolKind,
             location: memberLocation,
             data: {
               params
@@ -603,7 +549,7 @@ import {
       // Add the enum type symbol
       const enumSymbol: ExtendedSymbolInformation = {
         name: enumName,
-        kind: SymbolKind.Enum,
+        kind: 10 as SymbolKind,
         location: {
           uri: document.uri,
           range
@@ -659,7 +605,7 @@ import {
         // Add the enum case symbol
         const caseSymbol: ExtendedSymbolInformation = {
           name: fullCaseName,
-          kind: SymbolKind.EnumMember,
+          kind: 13 as SymbolKind,
           location: {
             uri: document.uri,
             range: caseRange
@@ -696,7 +642,7 @@ import {
       // Add the macro symbol
       const macroSymbol: ExtendedSymbolInformation = {
         name: macroName,
-        kind: SymbolKind.Function, // Use Function kind for macros
+        kind: 12 as SymbolKind,
         location: {
           uri: document.uri,
           range
@@ -713,38 +659,30 @@ import {
     /**
      * Serialize an expression to a string representation
      */
-    private serializeExpression(expr: any): string {
-      if (!expr) {
-        return '';
-      }
-      
+    private serializeExpression(expr: SExp): string {
       try {
-        if (expr.type === 'symbol') {
+        if (isSymbol(expr)) {
           return expr.name;
-        } 
-        else if (expr.type === 'list') {
-          return `(${expr.elements.map((e: any) => this.serializeExpression(e)).join(' ')})`;
+        } else if (isString(expr)) {
+          return `"${expr.value}"`;
+        } else if (isNumber(expr)) {
+          return expr.value.toString();
+        } else if (isBoolean(expr)) {
+          return expr.value ? 'true' : 'false';
+        } else if (isList(expr)) {
+          return `(${expr.elements.map((e: SExp) => this.serializeExpression(e)).join(' ')})`;
+        } else {
+          return '?';
         }
-        else if (expr.type === 'string' || expr.type === 'literal') {
-          if (typeof expr.value === 'string') {
-            return `"${expr.value}"`;
-          }
-          return String(expr.value);
-        }
-        return JSON.stringify(expr);
-      } catch (e) {
-        return String(expr);
+      } catch (_e) {
+        return '?';
       }
     }
     
     /**
      * Infer the type of an expression
      */
-    private inferExpressionType(expr: any): string {
-      if (!expr) {
-        return 'Any';
-      }
-      
+    private inferExpressionType(expr: SExp): string {
       try {
         // Simple type inference based on literal types
         if (expr.type === 'literal') {
@@ -792,8 +730,204 @@ import {
         }
         
         return 'Any';
-      } catch (e) {
-        return 'Any';
+      } catch (_e) {
+        return 'unknown';
       }
+    }
+    
+    /**
+     * Extract symbols from an imported module
+     * @param modulePath The path to the module
+     * @param moduleUri The URI of the module file
+     * @param importAlias Optional alias for the imported module
+     */
+    public extractModuleSymbols(
+      modulePath: string,
+      moduleUri: string,
+      importAlias?: string
+    ): void {
+      try {
+        // Get or read the module document
+        const moduleDoc = this.documents.get(moduleUri);
+        if (!moduleDoc) {
+          console.warn(`Module not found: ${moduleUri}`);
+          return;
+        }
+        
+        // Parse module content
+        const text = moduleDoc.getText();
+        const expressions = parse(text, true);
+        
+        // Process public exports
+        const exportedSymbols: ExtendedSymbolInformation[] = [];
+        
+        for (let i = 0; i < expressions.length; i++) {
+          const expr = expressions[i];
+          if (isList(expr) && expr.elements.length > 0) {
+            const first = expr.elements[0];
+            if (isSymbol(first)) {
+              const name = first.name;
+              
+              // Check if this is a public export (marked with export or public)
+              const isPublic = name === 'export' || name === 'public';
+              
+              if (isPublic && expr.elements.length > 1) {
+                // Extract the actual definition
+                const actualExpr = expr.elements[1];
+                if (isList(actualExpr) && actualExpr.elements.length > 0) {
+                  const defType = actualExpr.elements[0];
+                  if (isSymbol(defType)) {
+                    const documentation = this.extractDocumentation(moduleDoc, expr, i > 0 ? expressions[i-1] : undefined);
+                    
+                    // Process the exported symbol based on its type
+                    switch(defType.name) {
+                      case 'fn':
+                      case 'fx':
+                        if (actualExpr.elements.length > 1 && isSymbol(actualExpr.elements[1])) {
+                          this.addExportedSymbol(exportedSymbols, actualExpr, moduleDoc, documentation, importAlias);
+                        }
+                        break;
+                      
+                      case 'let':
+                      case 'var':
+                      case 'const':
+                        if (actualExpr.elements.length > 1 && isSymbol(actualExpr.elements[1])) {
+                          this.addExportedSymbol(exportedSymbols, actualExpr, moduleDoc, documentation, importAlias);
+                        }
+                        break;
+                      
+                      case 'class':
+                      case 'struct':
+                      case 'enum':
+                        if (actualExpr.elements.length > 1 && isSymbol(actualExpr.elements[1])) {
+                          this.addExportedSymbol(exportedSymbols, actualExpr, moduleDoc, documentation, importAlias);
+                        }
+                        break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        // Add these symbols to the importing document
+        if (exportedSymbols.length > 0) {
+          const moduleSymbols = this.documentSymbols.get(moduleUri) || [];
+          this.documentSymbols.set(moduleUri, [...moduleSymbols, ...exportedSymbols]);
+        }
+      } catch (error) {
+        console.error(`Error extracting module symbols: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    
+    /**
+     * Add an imported symbol to a document
+     * @param importingDocUri The URI of the document that imports the symbol
+     * @param symbolName The name of the imported symbol
+     * @param fromModule The module the symbol is imported from
+     * @param alias Optional alias for the imported symbol
+     */
+    public addImportedSymbol(
+      importingDocUri: string,
+      symbolName: string,
+      fromModule: string,
+      alias?: string
+    ): void {
+      try {
+        // Get symbols from the importing document
+        const docSymbols = this.documentSymbols.get(importingDocUri) || [];
+        
+        // Check if we already have this import
+        const existingImport = docSymbols.find(s => 
+          s.name === (alias || symbolName) && 
+          s.data?.sourceModule === fromModule
+        );
+        
+        if (existingImport) {
+          return; // Already imported
+        }
+        
+        // Find the symbol in the module
+        const moduleSymbols = this.documentSymbols.get(fromModule) || [];
+        const importedSymbol = moduleSymbols.find(s => s.name === symbolName);
+        
+        if (importedSymbol) {
+          // Clone the symbol for the importing document
+          const clonedSymbol: ExtendedSymbolInformation = {
+            ...importedSymbol,
+            name: alias || symbolName,
+            data: {
+              ...importedSymbol.data,
+              sourceModule: fromModule
+            }
+          };
+          
+          // Add to the importing document's symbols
+          this.documentSymbols.set(importingDocUri, [...docSymbols, clonedSymbol]);
+        }
+      } catch (error) {
+        console.error(`Error adding imported symbol: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    
+    /**
+     * Helper to add an exported symbol to the list
+     */
+    private addExportedSymbol(
+      exportedSymbols: ExtendedSymbolInformation[],
+      expr: SExp,
+      document: TextDocument,
+      documentation: string,
+      importAlias?: string
+    ): void {
+      if (!isList(expr) || expr.elements.length < 2 || !isSymbol(expr.elements[1])) {
+        return;
+      }
+      
+      const defType = (expr.elements[0] as SSymbol).name;
+      const symbolName = (expr.elements[1] as SSymbol).name;
+      const displayName = importAlias ? `${importAlias}.${symbolName}` : symbolName;
+      
+      // Get the expression range
+      const adaptedDoc = createTextDocumentAdapter(document);
+      const range = findExpressionRange(adaptedDoc, expr);
+      
+      // Determine symbol kind based on definition type
+      let kind: SymbolKind = 13 as SymbolKind; // Variable = 13
+      switch(defType) {
+        case 'fn':
+        case 'fx':
+          kind = 12 as SymbolKind; // Function = 12
+          break;
+        case 'class':
+          kind = 5 as SymbolKind; // Class = 5
+          break;
+        case 'struct':
+          kind = 23 as SymbolKind; // Struct = 23
+          break;
+        case 'enum':
+          kind = 10 as SymbolKind; // Enum = 10
+          break;
+        case 'const':
+          kind = 14 as SymbolKind; // Constant = 14
+          break;
+      }
+      
+      // Create the symbol info
+      const location = Location.create(document.uri, range);
+      
+      // Create the symbol with additional data
+      exportedSymbols.push({
+        name: displayName,
+        kind,
+        location,
+        containerName: importAlias || '',
+        data: {
+          documentation,
+          type: this.inferExpressionType(expr),
+          sourceModule: document.uri
+        }
+      });
     }
   }
