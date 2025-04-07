@@ -13,6 +13,7 @@
     { "include": "#function-definition" },
     { "include": "#function-call" },
     { "include": "#type-annotation" },
+    { "include": "#type-expression" },
     { "include": "#named-parameter" },
     { "include": "#default-parameter" },
     { "include": "#vector-literal" },
@@ -132,7 +133,13 @@
       "match": "\\b([a-zA-Z][a-zA-Z0-9\\-_]*)\\s*:\\s*([A-Z][a-zA-Z0-9]*(?:\\[\\])?)",
       "captures": {
         "1": { "name": "variable.parameter.hql" },
-        "2": { "name": "entity.name.type.hql" }
+        "2": { "name": "support.type.hql" }
+      }
+    },
+    "type-expression": {
+      "match": "\\(->\\s*([A-Z][a-zA-Z0-9]*(?:\\[\\])?)",
+      "captures": {
+        "1": { "name": "support.type.hql" }
       }
     },
     "named-parameter": {

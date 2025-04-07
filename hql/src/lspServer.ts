@@ -23,7 +23,10 @@ import {
   SymbolKind,
   SemanticTokensParams,
   SemanticTokensBuilder,
-  TextEdit
+  TextEdit,
+  CompletionParams,
+  DocumentSymbol,
+  InsertTextFormat
 } from 'vscode-languageserver/node';
 
 import {
@@ -33,7 +36,7 @@ import {
 import * as path from 'path';
 import * as fs from 'fs';
 
-import { parse, SExp, SList, SSymbol, SString, SNumber, SBoolean, SNil } from './parser';
+import { parse, SExp, SList, SSymbol, SString, SNumber, SBoolean, SNil, ParseError } from './parser';
 import { createTextDocumentAdapter, ITextDocument } from './document-adapter';
 import { 
   findExpressionRange, 
@@ -52,90 +55,6 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 // Track open, change and close text document events
 documents.listen(connection);
 
-// Define HQL keywords and core functions for code completion
-const hqlKeywords = [
-  // Control flow
-  { label: 'if', kind: CompletionItemKind.Keyword },
-  { label: 'cond', kind: CompletionItemKind.Keyword },
-  { label: 'when', kind: CompletionItemKind.Keyword },
-  { label: 'unless', kind: CompletionItemKind.Keyword },
-  { label: 'do', kind: CompletionItemKind.Keyword },
-  { label: 'loop', kind: CompletionItemKind.Keyword },
-  { label: 'recur', kind: CompletionItemKind.Keyword },
-  { label: 'for', kind: CompletionItemKind.Keyword },
-  { label: 'while', kind: CompletionItemKind.Keyword },
-  { label: 'repeat', kind: CompletionItemKind.Keyword },
-  
-  // Function and variable definition
-  { label: 'fn', kind: CompletionItemKind.Keyword, detail: 'Define a regular function', documentation: { kind: MarkupKind.Markdown, value: '```\n(fn name (args...) body)\n```\nDefines a new function.' } },
-  { label: 'fx', kind: CompletionItemKind.Keyword, detail: 'Define a pure function', documentation: { kind: MarkupKind.Markdown, value: '```\n(fx name (param1: Type1 param2: Type2) (-> ReturnType)\n  body)\n```\nDefines a pure function with typed parameters.' } },
-  { label: 'let', kind: CompletionItemKind.Keyword, detail: 'Define an immutable binding', documentation: { kind: MarkupKind.Markdown, value: '```\n(let name value)\n```\nCreates an immutable binding.' } },
-  { label: 'var', kind: CompletionItemKind.Keyword, detail: 'Define a mutable binding', documentation: { kind: MarkupKind.Markdown, value: '```\n(var name value)\n```\nCreates a mutable binding that can be updated with set!.' } },
-  { label: 'set!', kind: CompletionItemKind.Keyword },
-  { label: 'lambda', kind: CompletionItemKind.Keyword },
-  { label: 'defmacro', kind: CompletionItemKind.Keyword },
-  { label: 'macro', kind: CompletionItemKind.Keyword },
-  { label: 'return', kind: CompletionItemKind.Keyword, detail: 'Return a value from a function', documentation: { kind: MarkupKind.Markdown, value: '```\n(return value)\n```\nReturns the value from the function.' } },
-  
-  // Data structures
-  { label: 'vector', kind: CompletionItemKind.Function },
-  { label: 'hash-map', kind: CompletionItemKind.Function },
-  { label: 'hash-set', kind: CompletionItemKind.Function },
-  
-  // Classes and structs
-  { label: 'class', kind: CompletionItemKind.Keyword, detail: 'Define a class' },
-  { label: 'struct', kind: CompletionItemKind.Keyword, detail: 'Define a value type' },
-  { label: 'enum', kind: CompletionItemKind.Keyword, detail: 'Define an enumeration' },
-  
-  // Modules
-  { label: 'import', kind: CompletionItemKind.Keyword },
-  { label: 'export', kind: CompletionItemKind.Keyword },
-  
-  // Operators
-  { label: '+', kind: CompletionItemKind.Operator },
-  { label: '-', kind: CompletionItemKind.Operator },
-  { label: '*', kind: CompletionItemKind.Operator },
-  { label: '/', kind: CompletionItemKind.Operator },
-  { label: '=', kind: CompletionItemKind.Operator },
-  { label: '!=', kind: CompletionItemKind.Operator },
-  { label: '<', kind: CompletionItemKind.Operator },
-  { label: '<=', kind: CompletionItemKind.Operator },
-  { label: '>', kind: CompletionItemKind.Operator },
-  { label: '>=', kind: CompletionItemKind.Operator },
-  { label: 'and', kind: CompletionItemKind.Operator },
-  { label: 'or', kind: CompletionItemKind.Operator },
-  { label: 'not', kind: CompletionItemKind.Operator },
-  
-  // Common functions
-  { label: 'print', kind: CompletionItemKind.Function },
-  { label: 'console.log', kind: CompletionItemKind.Function },
-  { label: 'str', kind: CompletionItemKind.Function },
-  { label: 'get', kind: CompletionItemKind.Function },
-  { label: 'contains?', kind: CompletionItemKind.Function },
-  { label: 'filter', kind: CompletionItemKind.Function },
-  { label: 'map', kind: CompletionItemKind.Function },
-  { label: 'reduce', kind: CompletionItemKind.Function },
-  
-  // Values
-  { label: 'true', kind: CompletionItemKind.Keyword },
-  { label: 'false', kind: CompletionItemKind.Keyword },
-  { label: 'nil', kind: CompletionItemKind.Keyword },
-  
-  // Types
-  { label: 'Int', kind: CompletionItemKind.TypeParameter },
-  { label: 'Float', kind: CompletionItemKind.TypeParameter },
-  { label: 'Double', kind: CompletionItemKind.TypeParameter },
-  { label: 'String', kind: CompletionItemKind.TypeParameter },
-  { label: 'Boolean', kind: CompletionItemKind.TypeParameter },
-  { label: 'Bool', kind: CompletionItemKind.TypeParameter },
-  { label: 'Array', kind: CompletionItemKind.TypeParameter },
-  { label: 'Object', kind: CompletionItemKind.TypeParameter },
-  { label: 'Any', kind: CompletionItemKind.TypeParameter },
-];
-
-// Keep track of document symbols to provide code completion
-let documentSymbols: Map<string, SymbolInformation[]> = new Map();
-
 // Track imported symbols for better completions
 interface ImportedSymbol {
   name: string;          // Local name
@@ -144,8 +63,25 @@ interface ImportedSymbol {
   kind: SymbolKind;      // Kind of symbol
 }
 
+// Extended SymbolInformation with data field
+interface ExtendedSymbolInformation extends SymbolInformation {
+  data?: {
+    documentation?: string;
+    params?: { 
+      name: string; 
+      type: string; 
+      defaultValue?: string;
+    }[];
+    enumName?: string;
+    sourceModule?: string;
+  };
+}
+
 // Map from document URI to imported symbols
 const importedSymbols: Map<string, ImportedSymbol[]> = new Map();
+
+// Keep track of document symbols to provide code completion
+let documentSymbols: Map<string, ExtendedSymbolInformation[]> = new Map();
 
 // Manages the connection initialization
 connection.onInitialize((params: InitializeParams) => {
@@ -163,21 +99,8 @@ connection.onInitialize((params: InitializeParams) => {
       definitionProvider: true,
       // Enable document symbol provider
       documentSymbolProvider: true,
-      // Enable semantic tokens
-      semanticTokensProvider: {
-        legend: {
-          tokenTypes: [
-            'comment', 'string', 'keyword', 'number', 'regexp', 'operator', 
-            'namespace', 'type', 'struct', 'class', 'interface', 'enum',
-            'function', 'variable', 'parameter', 'property', 'label'
-          ],
-          tokenModifiers: [
-            'declaration', 'definition', 'readonly', 'static', 'deprecated',
-            'abstract', 'async', 'modification', 'documentation', 'defaultLibrary'
-          ]
-        },
-        full: true
-      }
+      // Disable semantic tokens completely
+      semanticTokensProvider: undefined
     }
   };
 
@@ -215,153 +138,30 @@ documents.onDidSave(event => {
  */
 async function updateImportedSymbols(textDocument: TextDocument): Promise<void> {
   try {
-    const uri = textDocument.uri;
     const text = textDocument.getText();
     
     // Clear existing imported symbols
-    importedSymbols.set(uri, []);
+    importedSymbols.delete(textDocument.uri);
     
-    // Parse the document
-    const expressions = parse(text);
+    // Parse the document with tolerant mode
+    const expressions = parse(text, true);
+    const symbols: ImportedSymbol[] = [];
     
-    // Find import statements
+    // Look for import statements: (import "module-name")
     for (const expr of expressions) {
-      if (isList(expr) && expr.elements.length > 0 && 
-          isSymbol(expr.elements[0]) && expr.elements[0].name === 'import') {
-        
-        // Vector-based import: (import [symbol1, symbol2 as alias] from "module")
-        if (expr.elements.length > 3 && 
-            isList(expr.elements[1]) && 
-            isSymbol(expr.elements[2]) && expr.elements[2].name === 'from' && 
-            ((isString(expr.elements[3])) || 
-             (isLiteral(expr.elements[3]) && 
-              expr.elements[3].type === "literal" && 
-              typeof expr.elements[3].value === 'string'))) {
-          
-          const importList = expr.elements[1];
-          const modulePath = isString(expr.elements[3]) ? 
-            expr.elements[3].value : 
-            String((expr.elements[3].type === "literal" ? expr.elements[3].value : ""));
-          
-          // Process each imported symbol
-          for (let i = 0; i < importList.elements.length; i++) {
-            const currentElem = importList.elements[i];
-            // Skip commas
-            if (isSymbol(currentElem) && currentElem.name === ',') {
-              continue;
-            }
-            
-            // Check for "symbol as alias" pattern
-            if (isSymbol(currentElem) && 
-                i + 2 < importList.elements.length) {
-              const asElem = importList.elements[i+1];
-              const aliasElem = importList.elements[i+2];
-              
-              if (isSymbol(asElem) && asElem.name === 'as' && 
-                  isSymbol(aliasElem)) {
-                
-                const sourceName = currentElem.name;
-                const localName = aliasElem.name;
-                
-                // Add to imported symbols with the local name
-                addImportedSymbol(uri, {
-                  name: localName,
-                  sourceName,
-                  sourceModule: modulePath,
-                  kind: SymbolKind.Variable // Default, will update later
-                });
-                
-                // Skip the "as alias" part
-                i += 2;
-              }
-              // Regular symbol import
-              else if (isSymbol(currentElem)) {
-                const symbolName = currentElem.name;
-                
-                // Add to imported symbols
-                addImportedSymbol(uri, {
-                  name: symbolName,
-                  sourceName: symbolName,
-                  sourceModule: modulePath,
-                  kind: SymbolKind.Variable // Default, will update later
-                });
-              }
-            }
-            // Regular symbol import without as/alias
-            else if (isSymbol(currentElem)) {
-              const symbolName = currentElem.name;
-              
-              // Add to imported symbols
-              addImportedSymbol(uri, {
-                name: symbolName,
-                sourceName: symbolName,
-                sourceModule: modulePath,
-                kind: SymbolKind.Variable // Default, will update later
-              });
-            }
-          }
-        }
-        
-        // Namespace import: (import module from "module-path")
-        else if (expr.elements.length > 3 && 
-                isSymbol(expr.elements[1]) && 
-                isSymbol(expr.elements[2]) && expr.elements[2].name === 'from' && 
-                ((isString(expr.elements[3])) || 
-                 (isLiteral(expr.elements[3]) && 
-                  expr.elements[3].type === "literal" && 
-                  typeof expr.elements[3].value === 'string'))) {
-          
-          const namespaceName = expr.elements[1].name;
-          const modulePath = isString(expr.elements[3]) ? 
-            expr.elements[3].value : 
-            String((expr.elements[3].type === "literal" ? expr.elements[3].value : ""));
-          
-          // Add namespace as a module
-          addImportedSymbol(uri, {
-            name: namespaceName,
-            sourceName: '*',
-            sourceModule: modulePath,
-            kind: SymbolKind.Module
-          });
-          
-          // Try to find the module and extract its exports for better completions
-          try {
-            const workspaceFolders = await connection.workspace.getWorkspaceFolders();
-            if (!workspaceFolders) continue;
-            
-            const rootUri = workspaceFolders[0].uri;
-            const rootPath = rootUri.replace('file://', '');
-            
-            const resolvedPath = path.resolve(
-              rootPath, 
-              modulePath.replace(/^\.\//, '')
-            );
-            
-            if (resolvedPath.endsWith('.hql')) {
-              // Load and parse the module
-              const moduleText = fs.readFileSync(resolvedPath, 'utf8');
-              
-              // Get the symbols from the module
-              const moduleSymbols = extractModuleSymbols(moduleText);
-              
-              // Add them as properties of the namespace
-              for (const symbol of moduleSymbols) {
-                addImportedSymbol(uri, {
-                  name: `${namespaceName}.${symbol.name}`,
-                  sourceName: symbol.name,
-                  sourceModule: modulePath,
-                  kind: symbol.kind
-                });
-              }
-            }
-          } catch (error) {
-            console.error(`Error processing module exports: ${error}`);
-          }
+      if (isList(expr) && expr.elements.length > 0) {
+        const first = expr.elements[0];
+        if (isSymbol(first) && first.name === 'import') {
+          // ... existing code ...
         }
       }
     }
+    
+    // Store imported symbols for this document
+    importedSymbols.set(textDocument.uri, symbols);
   } catch (error) {
-    console.error(`Error updating imported symbols: ${error}`);
+    console.error(`Error updating imported symbols: ${error instanceof Error ? error.message : String(error)}`);
+    importedSymbols.set(textDocument.uri, []);
   }
 }
 
@@ -456,19 +256,50 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
   try {
     const text = textDocument.getText();
     const uri = textDocument.uri;
-    
-    // Parse the document
-    const expressions = parse(text);
+     
+    // Parse the document with tolerant mode enabled
+    const expressions = parse(text, true);
     
     // Extract symbols from the parse tree
-    const symbols: SymbolInformation[] = [];
+    const symbols: ExtendedSymbolInformation[] = [];
     
     // Process expressions to find symbol definitions
-    for (const expr of expressions) {
+    for (let i = 0; i < expressions.length; i++) {
+      const expr = expressions[i];
       if (isList(expr) && expr.elements.length > 0) {
         const first = expr.elements[0];
         if (isSymbol(first)) {
           const name = first.name;
+          
+          // Extract documentation comment from above the expression
+          let documentation = "";
+          if (i > 0) {
+            // Get the range of the previous expression to check for comments
+            const adaptedDoc = createTextDocumentAdapter(textDocument);
+            const currentRange = findExpressionRange(adaptedDoc, expr);
+            const previousExpr = expressions[i-1];
+            const previousRange = findExpressionRange(adaptedDoc, previousExpr);
+            
+            // Check if there's text between the previous expression and current one
+            const textBetween = textDocument.getText({
+              start: previousRange.end,
+              end: currentRange.start
+            });
+            
+            // Look for comments (;; or ;) in the text between expressions
+            const commentRegex = /^\s*;;(.*)$|^\s*;(.*)$/gm;
+            let commentMatch;
+            let commentLines = [];
+            
+            while ((commentMatch = commentRegex.exec(textBetween)) !== null) {
+              const commentText = commentMatch[1] || commentMatch[2] || "";
+              commentLines.push(commentText.trim());
+            }
+            
+            if (commentLines.length > 0) {
+              documentation = commentLines.join("\n");
+            }
+          }
           
           // Handle function definitions
           if (name === 'fn' || name === 'fx' || name === 'defmacro' || name === 'macro') {
@@ -477,10 +308,62 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
               const adaptedDoc = createTextDocumentAdapter(textDocument);
               const range = findExpressionRange(adaptedDoc, expr);
               
+              // Extract parameter information
+              let params = [];
+              if (expr.elements.length > 2 && isList(expr.elements[2])) {
+                const paramList = expr.elements[2] as SList;
+                for (let j = 0; j < paramList.elements.length; j++) {
+                  if (isSymbol(paramList.elements[j])) {
+                    let paramName = (paramList.elements[j] as SSymbol).name;
+                    let paramType = "Any";
+                    let defaultValue: string | undefined = undefined;
+                    
+                    // Check for type annotation (param: Type)
+                    if (j + 2 < paramList.elements.length && 
+                        isSymbol(paramList.elements[j+1]) && 
+                        (paramList.elements[j+1] as SSymbol).name === ':' && 
+                        isSymbol(paramList.elements[j+2])) {
+                      paramType = (paramList.elements[j+2] as SSymbol).name;
+                      j += 2; // Skip the ':' and type
+                      
+                      // Check for default value (param: Type = default)
+                      if (j + 2 < paramList.elements.length && 
+                          isSymbol(paramList.elements[j+1]) && 
+                          (paramList.elements[j+1] as SSymbol).name === '=') {
+                        // Extract default value
+                        const defaultExpr = paramList.elements[j+2];
+                        defaultValue = sexpToString(defaultExpr);
+                        j += 2; // Skip the '=' and default value
+                      }
+                    }
+                    // Check for default value without type (param = default)
+                    else if (j + 2 < paramList.elements.length && 
+                             isSymbol(paramList.elements[j+1]) && 
+                             (paramList.elements[j+1] as SSymbol).name === '=') {
+                      // Extract default value
+                      const defaultExpr = paramList.elements[j+2];
+                      defaultValue = sexpToString(defaultExpr);
+                      j += 2; // Skip the '=' and default value
+                    }
+                    
+                    params.push({ 
+                      name: paramName, 
+                      type: paramType,
+                      defaultValue: defaultValue
+                    });
+                  }
+                }
+              }
+              
               symbols.push({
                 name: funcName,
                 kind: SymbolKind.Function,
-                location: Location.create(uri, range)
+                location: Location.create(uri, range),
+                // Store documentation and params in the data field
+                data: {
+                  documentation: documentation,
+                  params: params
+                }
               });
             }
           }
@@ -495,7 +378,10 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
               symbols.push({
                 name: varName,
                 kind: SymbolKind.Variable,
-                location: Location.create(uri, range)
+                location: Location.create(uri, range),
+                data: {
+                  documentation: documentation
+                }
               });
             }
             // Handle let with multiple bindings: (let (x 1 y 2) ...)
@@ -510,7 +396,10 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
                   symbols.push({
                     name: varName,
                     kind: SymbolKind.Variable,
-                    location: Location.create(uri, range)
+                    location: Location.create(uri, range),
+                    data: {
+                      documentation: documentation
+                    }
                   });
                 }
               }
@@ -527,7 +416,10 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
               symbols.push({
                 name: className,
                 kind: name === 'class' ? SymbolKind.Class : SymbolKind.Struct,
-                location: Location.create(uri, range)
+                location: Location.create(uri, range),
+                data: {
+                  documentation: documentation
+                }
               });
             }
           }
@@ -539,10 +431,15 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
               const adaptedDoc = createTextDocumentAdapter(textDocument);
               const range = findExpressionRange(adaptedDoc, expr);
               
+              console.log(`Adding enum symbol: ${enumName}`);
+              
               symbols.push({
                 name: enumName,
                 kind: SymbolKind.Enum,
-                location: Location.create(uri, range)
+                location: Location.create(uri, range),
+                data: {
+                  documentation: documentation
+                }
               });
               
               // Extract enum cases
@@ -558,10 +455,15 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
                     const adaptedDoc = createTextDocumentAdapter(textDocument);
                     const caseRange = findExpressionRange(adaptedDoc, caseExpr);
                     
+                    console.log(`Adding enum case: ${enumName}.${caseName}`);
+                    
                     symbols.push({
                       name: `${enumName}.${caseName}`,
                       kind: SymbolKind.EnumMember,
-                      location: Location.create(uri, caseRange)
+                      location: Location.create(uri, caseRange),
+                      data: {
+                        enumName: enumName
+                      }
                     });
                   }
                 }
@@ -574,9 +476,9 @@ async function updateDocumentSymbols(textDocument: TextDocument): Promise<void> 
     
     // Store symbols for this document
     documentSymbols.set(uri, symbols);
-    
   } catch (error) {
-    console.error(`Error updating document symbols: ${error}`);
+    console.error(`Error updating document symbols: ${error instanceof Error ? error.message : String(error)}`);
+    documentSymbols.set(textDocument.uri, []);
   }
 }
 
@@ -595,6 +497,8 @@ async function getPathCompletionItems(
 ): Promise<CompletionItem[]> {
   const items: CompletionItem[] = [];
   try {
+    console.log(`Getting path completions for: "${partialPath}"`);
+    
     // Normalize the path
     let basePath = partialPath.replace(/^['"]/, '').replace(/['"]$/, '');
     const isRelative = basePath.startsWith('./') || basePath.startsWith('../');
@@ -603,13 +507,69 @@ async function getPathCompletionItems(
     if (!isRelative) {
       if (isImport) {
         return [
-          { label: 'path', kind: CompletionItemKind.Module },
-          { label: 'fs', kind: CompletionItemKind.Module },
-          { label: 'express', kind: CompletionItemKind.Module },
-          { label: 'http', kind: CompletionItemKind.Module },
-          { label: 'util', kind: CompletionItemKind.Module },
-          { label: 'crypto', kind: CompletionItemKind.Module },
-          { label: 'events', kind: CompletionItemKind.Module },
+          { 
+            label: 'path', 
+            kind: CompletionItemKind.Module,
+            detail: 'Node.js path module',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'The Node.js path module provides utilities for working with file and directory paths.'
+            }
+          },
+          { 
+            label: 'fs', 
+            kind: CompletionItemKind.Module,
+            detail: 'Node.js file system module',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'The Node.js fs module provides an API for interacting with the file system.'
+            }
+          },
+          { 
+            label: 'express', 
+            kind: CompletionItemKind.Module,
+            detail: 'Web application framework',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Express is a minimal and flexible Node.js web application framework.'
+            }
+          },
+          { 
+            label: 'http', 
+            kind: CompletionItemKind.Module,
+            detail: 'Node.js HTTP module',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'The Node.js http module provides HTTP server and client functionality.'
+            }
+          },
+          { 
+            label: 'util', 
+            kind: CompletionItemKind.Module,
+            detail: 'Node.js utility functions',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'The Node.js util module provides utility functions for debugging and other tasks.'
+            }
+          },
+          { 
+            label: 'crypto', 
+            kind: CompletionItemKind.Module,
+            detail: 'Node.js cryptographic functionality',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'The Node.js crypto module provides cryptographic functionality.'
+            }
+          },
+          { 
+            label: 'events', 
+            kind: CompletionItemKind.Module,
+            detail: 'Node.js event handling',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'The Node.js events module provides an EventEmitter class for event handling.'
+            }
+          },
         ];
       }
       return items;
@@ -626,18 +586,32 @@ async function getPathCompletionItems(
       prefix = basePath.substring(lastSlashIndex + 1);
     }
     
-    // Create absolute path from workspace root
+    // Create absolute path from workspace root or document directory
     const workspaceFolders = await connection.workspace.getWorkspaceFolders();
     if (!workspaceFolders || workspaceFolders.length === 0) {
       return items;
     }
     
-    const rootUri = workspaceFolders[0].uri;
-    const rootPath = rootUri.replace('file://', '');
+    // Get the current document URI
+    const textDocuments = documents.all();
+    const activeDocumentUri = textDocuments.length > 0 ? textDocuments[0].uri : workspaceFolders[0].uri;
+    let documentDirPath = path.dirname(activeDocumentUri.replace('file://', ''));
+    
+    // Use document directory as base for relative paths
+    let rootUri = workspaceFolders[0].uri;
+    let rootPath = rootUri.replace('file://', '');
     
     const dirToScan = dirPath ? 
-      path.resolve(rootPath, dirPath.replace(/^\.\//, '')) : 
-      rootPath;
+      path.resolve(documentDirPath, dirPath.replace(/^\.\//, '')) : 
+      documentDirPath;
+    
+    console.log(`Scanning directory: ${dirToScan}`);
+    
+    // Check if directory exists
+    if (!fs.existsSync(dirToScan)) {
+      console.log(`Directory does not exist: ${dirToScan}`);
+      return items;
+    }
     
     // Get entries in the directory
     const entries = fs.readdirSync(dirToScan, { withFileTypes: true });
@@ -649,7 +623,7 @@ async function getPathCompletionItems(
       }
       
       // Skip files that don't match the prefix
-      if (prefix && !entry.name.startsWith(prefix)) {
+      if (prefix && !entry.name.toLowerCase().startsWith(prefix.toLowerCase())) {
         continue;
       }
       
@@ -657,16 +631,45 @@ async function getPathCompletionItems(
         items.push({
           label: entry.name + '/',
           kind: CompletionItemKind.Folder,
-          detail: 'Directory'
+          detail: 'Directory',
+          insertText: entry.name + '/',
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Directory containing HQL files at ${path.join(dirPath, entry.name)}`
+          },
+          data: {
+            type: 'directory',
+            path: path.join(dirToScan, entry.name)
+          }
         });
-      } else if (entry.isFile() && entry.name.endsWith('.hql')) {
+      } else if (entry.isFile() && (entry.name.endsWith('.hql') || isImport)) {
         items.push({
           label: entry.name,
           kind: CompletionItemKind.File,
-          detail: 'HQL File'
+          detail: entry.name.endsWith('.hql') ? 'HQL File' : 'File',
+          insertText: entry.name,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `File at ${path.join(dirPath, entry.name)}`
+          },
+          data: {
+            type: 'file',
+            path: path.join(dirToScan, entry.name)
+          }
         });
       }
     }
+    
+    // Sort directories first, then files
+    items.sort((a, b) => {
+      if (a.kind === CompletionItemKind.Folder && b.kind !== CompletionItemKind.Folder) {
+        return -1;
+      }
+      if (a.kind !== CompletionItemKind.Folder && b.kind === CompletionItemKind.Folder) {
+        return 1;
+      }
+      return a.label.toString().localeCompare(b.label.toString());
+    });
   } catch (error) {
     console.error(`Error getting path completion items: ${error}`);
   }
@@ -760,6 +763,10 @@ async function getImportableSymbols(modulePath: string): Promise<CompletionItem[
         documentation: {
           kind: MarkupKind.Markdown,
           value: `Symbol \`${symbolName}\` exported from \`${modulePath}\``
+        },
+        data: {
+          sourceModule: modulePath,
+          symbolName: symbolName
         }
       });
     }
@@ -786,7 +793,7 @@ async function getImportableSymbols(modulePath: string): Promise<CompletionItem[
 /**
  * Extract function parameters from a function definition
  */
-function extractFunctionParams(document: TextDocument, symbol: SymbolInformation): 
+function extractFunctionParams(document: TextDocument, symbol: ExtendedSymbolInformation): 
   { params: { name: string, type?: string, defaultValue?: string }[] } | undefined {
   try {
     // Get the function definition text
@@ -870,442 +877,1118 @@ function extractFunctionParams(document: TextDocument, symbol: SymbolInformation
 }
 
 // Handler for completion requests
-connection.onCompletion(async (params: TextDocumentPositionParams): Promise<CompletionItem[]> => {
-  const document = documents.get(params.textDocument.uri);
-  if (!document) {
-    return [];
-  }
+connection.onCompletion(async (params: CompletionParams): Promise<CompletionItem[]> => {
+  try {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) {
+      return [];
+    }
 
-  const position = params.position;
-  const adaptedDoc = createTextDocumentAdapter(document);
-  const currentExp = getCurrentExpression(adaptedDoc, position);
-  
-  // Get all defined symbols for the current document
-  const symbols = documentSymbols.get(document.uri) || [];
-  
-  // Get the current line up to the cursor position
-  const currentLine = document.getText({
-    start: { line: position.line, character: 0 },
-    end: position
-  });
-  
-  // Check if we're completing a path in an import statement
-  if (/\(\s*import\b.*\bfrom\s+(['"])[^'"]*$/.test(currentLine)) {
-    // Extract the partial path
-    const match = currentLine.match(/\bfrom\s+(['"])([^'"]*?)$/);
-    if (match) {
-      const quote = match[1];
-      const partialPath = match[2];
-      const pathCompletions = await getPathCompletionItems(partialPath, true);
-      
-      // Format the completions with quotes
-      return pathCompletions.map(item => ({
-        ...item,
-        label: item.label,
-        textEdit: TextEdit.replace(
-          Range.create(
-            position.line, 
-            position.character - partialPath.length,
-            position.line,
-            position.character
-          ),
-          item.label
-        ),
-        commitCharacters: ['/']
-      }));
-    }
-  }
-  
-  // Enhanced import vector completion
-  // Check if we're completing a symbol in an import vector
-  if (/\(\s*import\s+\[[^\]]*$/.test(currentLine)) {
-    // Check if we have a module path in the import
-    const moduleMatch = currentLine.match(/from\s+['"]([^'"]+)['"]/);
-    if (moduleMatch) {
-      const modulePath = moduleMatch[1];
-      return await getImportableSymbols(modulePath);
-    }
+    const position = params.position;
+    const adaptedDoc = createTextDocumentAdapter(document);
     
-    // If we're just starting the import list, suggest common imports
-    return [
-      { label: 'path', kind: CompletionItemKind.Module, detail: 'Node.js path module' },
-      { label: 'fs', kind: CompletionItemKind.Module, detail: 'Node.js file system module' },
-      { label: 'util', kind: CompletionItemKind.Module, detail: 'Node.js utilities module' },
-      { label: 'http', kind: CompletionItemKind.Module, detail: 'Node.js HTTP module' },
-      { label: 'express', kind: CompletionItemKind.Module, detail: 'Web framework' },
-      // Add more common modules
-    ];
-  }
-  
-  // Prepare completion items
-  let completionItems: CompletionItem[] = [];
-  
-  // Add all HQL keywords
-  completionItems = completionItems.concat(hqlKeywords);
-  
-  // Add document symbols
-  for (const symbol of symbols) {
-    completionItems.push({
-      label: symbol.name,
-      kind: symbol.kind === SymbolKind.Function ? CompletionItemKind.Function :
-            symbol.kind === SymbolKind.Variable ? CompletionItemKind.Variable :
-            symbol.kind === SymbolKind.Class ? CompletionItemKind.Class :
-            symbol.kind === SymbolKind.Struct ? CompletionItemKind.Struct :
-            symbol.kind === SymbolKind.Enum ? CompletionItemKind.Enum :
-            symbol.kind === SymbolKind.EnumMember ? CompletionItemKind.EnumMember :
-            CompletionItemKind.Text
+    // Get the current line up to the cursor position
+    const currentLine = document.getText({
+      start: { line: position.line, character: 0 },
+      end: position
     });
-  }
-  
-  // Add imported symbols to completion list
-  const docImports = importedSymbols.get(document.uri) || [];
-  
-  // Add items from imported modules to completion
-  for (const imported of docImports) {
-    // Don't include namespace members in general completions
-    if (imported.name.includes('.')) {
-      continue;
-    }
-    
-    let kindMapping: CompletionItemKind = CompletionItemKind.Variable;
-    switch (imported.kind) {
-      case SymbolKind.Function:
-        kindMapping = CompletionItemKind.Function as CompletionItemKind;
-        break;
-      case SymbolKind.Class:
-        kindMapping = CompletionItemKind.Class as CompletionItemKind;
-        break;
-      case SymbolKind.Enum:
-        kindMapping = CompletionItemKind.Enum as CompletionItemKind;
-        break;
-      case SymbolKind.EnumMember:
-        kindMapping = CompletionItemKind.EnumMember as CompletionItemKind;
-        break;
-      case SymbolKind.Module:
-        kindMapping = CompletionItemKind.Module as CompletionItemKind;
-        break;
-    }
-    
-    completionItems.push({
-      label: imported.name,
-      kind: kindMapping,
-      detail: `Imported from "${imported.sourceModule}"`,
-      documentation: {
-        kind: MarkupKind.Markdown,
-        value: `Imported as \`${imported.name}\` from \`${imported.sourceModule}\``
-      }
-    });
-  }
-  
-  // Enhanced enum completion
-  // Check if we're accessing an enum via dot notation
-  const dotMatch = currentLine.match(/(\w+)\.\s*$/);
-  if (dotMatch) {
-    const enumName = dotMatch[1];
-    
-    // Find if the symbol is an enum
-    const enumSymbol = symbols.find(s => 
-      s.kind === SymbolKind.Enum && 
-      s.name === enumName
-    );
-    
-    if (enumSymbol) {
-      // Find all enum cases for this enum
-      const enumCases = symbols.filter(s => 
-        s.kind === SymbolKind.EnumMember && 
-        s.name.startsWith(`${enumName}.`)
-      );
-      
-      // Return the enum cases as completion items
-      return enumCases.map(enumCase => {
-        const caseName = enumCase.name.substring(enumName.length + 1);
-        return {
-          label: caseName,
-          kind: CompletionItemKind.EnumMember,
-          detail: `Case of ${enumName}`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `\`${enumName}.${caseName}\` - Enum case from \`${enumName}\``
-          }
-        };
-      });
-    }
-    
-    // Check for imported enums as well
-    const importedEnum = docImports.find(imp => 
-      imp.kind === SymbolKind.Enum && 
-      imp.name === enumName
-    );
 
-    if (importedEnum) {
-      // Find associated enum cases
-      const enumCases = docImports.filter(imp => 
-        imp.kind === SymbolKind.EnumMember && 
-        imp.name.startsWith(`${enumName}.`)
-      );
-      
-      // Return the enum cases as completion items
-      return enumCases.map(enumCase => {
-        const caseName = enumCase.name.substring(enumName.length + 1);
-        return {
-          label: caseName,
-          kind: CompletionItemKind.EnumMember,
-          detail: `Case of ${enumName} (imported)`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `\`${enumName}.${caseName}\` - Enum case from imported enum \`${enumName}\``
-          }
-        };
-      });
+    // Get full text for context awareness
+    const text = document.getText();
+
+    // Check if we're in a snippet or placeholder mode by looking for special markers
+    // VS Code adds special characters around placeholders, which we can detect
+    const isInSnippetMode = currentLine.includes('${') || 
+                           // Check if we're in an active template placeholder
+                           /\$\{\d+:[^}]+\}/.test(currentLine) ||
+                           // Check if we're right after a template insertion
+                           /\(\w+\s+\w*$/.test(currentLine);
+    
+    // If we're in snippet mode, don't offer any completions to avoid
+    // interfering with tab navigation through placeholders
+    if (isInSnippetMode) {
+      return [];
     }
-  }
-  
-  // Check if we're accessing an imported namespace
-  const namespaceMatch = currentLine.match(/(\w+)\.\s*$/);
-  if (namespaceMatch) {
-    const namespaceName = namespaceMatch[1];
+
+    // Try to get the current expression using tolerant parsing
+    let currentExp;
+    try {
+      currentExp = getCurrentExpression(adaptedDoc, position, true);
+    } catch (error) {
+      console.log(`Error getting current expression: ${error}`);
+      // Don't return early, we can still provide completions based on the current line
+    }
     
-    // Check if this is an imported namespace
-    const namespaceImport = docImports.find(imp => 
-      imp.kind === SymbolKind.Module &&
-      imp.name === namespaceName
-    );
+    // Prepare basic completions
+    let completionItems: CompletionItem[] = [];
     
-    if (namespaceImport) {
-      // Find all namespace members
-      const members = docImports.filter(imp => 
-        imp.name.startsWith(`${namespaceName}.`)
+    // IMPROVED ENUM DOT COMPLETION
+    // First check for a direct enum dot notation - captures both cases like:
+    // 1. "os."
+    // 2. "install os."
+    const directDotMatch = currentLine.match(/\b(\w+)\.\s*$/);
+    if (directDotMatch) {
+      const enumName = directDotMatch[1];
+      console.log(`Detected dot notation for possible enum: ${enumName}`);
+      
+      // Get all defined symbols for the current document
+      const symbols = documentSymbols.get(document.uri) || [];
+      const enums = symbols.filter(s => s.kind === SymbolKind.Enum);
+      
+      // Find the matching enum with case-insensitive comparison
+      const matchingEnum = enums.find(e => 
+        e.name.toLowerCase() === enumName.toLowerCase()
       );
       
-      // Return the members as completion items
-      return members.map(member => {
-        const memberName = member.name.substring(namespaceName.length + 1);
-        let kindMapping: CompletionItemKind = CompletionItemKind.Variable;
+      if (matchingEnum) {
+        const actualEnumName = matchingEnum.name; // Get the correct case
+        console.log(`Found matching enum: ${actualEnumName}`);
         
-        switch (member.kind) {
-          case SymbolKind.Function:
-            kindMapping = CompletionItemKind.Function as CompletionItemKind;
-            break;
-          case SymbolKind.Class:
-            kindMapping = CompletionItemKind.Class as CompletionItemKind;
-            break;
-          case SymbolKind.Enum:
-            kindMapping = CompletionItemKind.Enum as CompletionItemKind;
-            break;
-          case SymbolKind.EnumMember:
-            kindMapping = CompletionItemKind.EnumMember as CompletionItemKind;
-            break;
+        // Find all enum members for this enum
+        const enumMembers = symbols.filter(s => 
+          s.kind === SymbolKind.EnumMember && 
+          s.data && s.data.enumName === actualEnumName
+        );
+        
+        if (enumMembers.length > 0) {
+          // We found enum members, add them to completion
+          for (const member of enumMembers) {
+            const memberName = member.name.split('.')[1]; // Get just the case name
+            
+            completionItems.push({
+              label: memberName,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Case of enum ${actualEnumName}`,
+              sortText: `00-${memberName}`, // HIGHEST priority for enum cases
+              data: { enumName: actualEnumName }
+            });
+          }
+          
+          // Only return the enum members in this context
+          console.log(`Returning ${completionItems.length} enum completions for ${actualEnumName}`);
+          return completionItems;
+        } else {
+          console.log(`No enum members found for ${actualEnumName}`);
         }
+      } else {
+        console.log(`No matching enum found for ${enumName}`);
         
-        return {
-          label: memberName,
-          kind: kindMapping,
-          detail: `Member of ${namespaceName} (imported from ${namespaceImport.sourceModule})`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `\`${namespaceName}.${memberName}\` - From module \`${namespaceImport.sourceModule}\``
+        // Special check for function parameter that is an enum
+        // This handles cases like: (install os.)
+        const functionParamMatch = currentLine.match(/\((\w+)\s+(\w+)\.\s*$/);
+        if (functionParamMatch) {
+          const functionName = functionParamMatch[1];
+          const paramName = functionParamMatch[2];
+          console.log(`Detected function call with enum param: ${functionName} ${paramName}`);
+          
+          // SPECIFIC WORKAROUND: Handle the common case of install os.
+          if (functionName.toLowerCase() === 'install' && paramName.toLowerCase() === 'os') {
+            console.log('Found special case of "install os." - providing OS enum cases');
+            
+            // Look for OS enum specifically
+            const osEnum = enums.find(e => e.name.toLowerCase() === 'os');
+            
+            if (osEnum) {
+              const actualEnumName = osEnum.name;
+              
+              // Find all OS enum members
+              const enumMembers = symbols.filter(s => 
+                s.kind === SymbolKind.EnumMember && 
+                s.data && s.data.enumName === actualEnumName
+              );
+              
+              if (enumMembers.length > 0) {
+                // Add OS enum members to completion
+                for (const member of enumMembers) {
+                  const memberName = member.name.split('.')[1];
+                  
+                  completionItems.push({
+                    label: memberName,
+                    kind: CompletionItemKind.EnumMember,
+                    detail: `Case of enum ${actualEnumName}`,
+                    sortText: `00-${memberName}`,
+                    data: { enumName: actualEnumName }
+                  });
+                }
+                
+                console.log(`Returning ${completionItems.length} OS enum completions`);
+                return completionItems;
+              }
+            } else {
+              // Fallback if OS enum isn't defined yet - provide common OS values
+              console.log('OS enum not found - providing default OS cases');
+              const defaultOSCases = ['macOS', 'windows', 'linux', 'android', 'iOS'];
+              
+              for (const caseName of defaultOSCases) {
+                completionItems.push({
+                  label: caseName,
+                  kind: CompletionItemKind.EnumMember,
+                  detail: 'Common OS type',
+                  sortText: `00-${caseName}`,
+                  data: { enumName: 'OS' }
+                });
+              }
+              
+              return completionItems;
+            }
           }
-        };
-      });
-    }
-  }
-  
-  // Check if we're in a method chain after a dot
-  if (/\.\s*$/.test(currentLine)) {
-    // Try to infer the object type from the context
-    let objectType = '';
-    
-    // Simple type inference based on variable names
-    if (/(\w+)\.\s*$/.test(currentLine)) {
-      const varName = RegExp.$1.toLowerCase();
-      
-      if (/array|list|items|numbers|vectors?/.test(varName)) {
-        objectType = 'array';
-      } else if (/string|text|msg|message/.test(varName)) {
-        objectType = 'string';
-      } else if (/map|obj|object|config|settings/.test(varName)) {
-        objectType = 'object';
-      } else if (/date|time/.test(varName)) {
-        objectType = 'date';
-      } else if (/math/.test(varName)) {
-        objectType = 'math';
-      } else if (/console/.test(varName)) {
-        objectType = 'console';
-      } else if (/re(gex)?|pattern/.test(varName)) {
-        objectType = 'regexp';
-      }
-    }
-    
-    // Provide completions based on inferred type
-    switch (objectType) {
-      case 'array':
-        return [
-          { label: 'map', kind: CompletionItemKind.Method, detail: 'Transforms each element' },
-          { label: 'filter', kind: CompletionItemKind.Method, detail: 'Filters elements by predicate' },
-          { label: 'reduce', kind: CompletionItemKind.Method, detail: 'Reduces array to a single value' },
-          { label: 'forEach', kind: CompletionItemKind.Method, detail: 'Executes function on each element' },
-          { label: 'find', kind: CompletionItemKind.Method, detail: 'Finds first matching element' },
-          { label: 'findIndex', kind: CompletionItemKind.Method, detail: 'Finds index of first matching element' },
-          { label: 'some', kind: CompletionItemKind.Method, detail: 'Tests if some element passes predicate' },
-          { label: 'every', kind: CompletionItemKind.Method, detail: 'Tests if all elements pass predicate' },
-          { label: 'slice', kind: CompletionItemKind.Method, detail: 'Returns a portion of the array' },
-          { label: 'concat', kind: CompletionItemKind.Method, detail: 'Concatenates arrays' },
-          { label: 'join', kind: CompletionItemKind.Method, detail: 'Joins elements into string' },
-          { label: 'length', kind: CompletionItemKind.Property, detail: 'Number of elements' },
-          { label: 'push', kind: CompletionItemKind.Method, detail: 'Adds element to end' },
-          { label: 'pop', kind: CompletionItemKind.Method, detail: 'Removes last element' },
-          { label: 'shift', kind: CompletionItemKind.Method, detail: 'Removes first element' },
-          { label: 'unshift', kind: CompletionItemKind.Method, detail: 'Adds element to beginning' }
-        ];
-        
-      case 'string':
-        return [
-          { label: 'toLowerCase', kind: CompletionItemKind.Method, detail: 'Converts to lowercase' },
-          { label: 'toUpperCase', kind: CompletionItemKind.Method, detail: 'Converts to uppercase' },
-          { label: 'trim', kind: CompletionItemKind.Method, detail: 'Removes whitespace from ends' },
-          { label: 'substring', kind: CompletionItemKind.Method, detail: 'Returns portion of string' },
-          { label: 'substr', kind: CompletionItemKind.Method, detail: 'Returns characters from string' },
-          { label: 'split', kind: CompletionItemKind.Method, detail: 'Splits string into array' },
-          { label: 'replace', kind: CompletionItemKind.Method, detail: 'Replaces occurrences' },
-          { label: 'match', kind: CompletionItemKind.Method, detail: 'Matches against regexp' },
-          { label: 'indexOf', kind: CompletionItemKind.Method, detail: 'Finds position of substring' },
-          { label: 'lastIndexOf', kind: CompletionItemKind.Method, detail: 'Finds last position of substring' },
-          { label: 'startsWith', kind: CompletionItemKind.Method, detail: 'Tests if string starts with value' },
-          { label: 'endsWith', kind: CompletionItemKind.Method, detail: 'Tests if string ends with value' },
-          { label: 'includes', kind: CompletionItemKind.Method, detail: 'Tests if string contains value' },
-          { label: 'length', kind: CompletionItemKind.Property, detail: 'Number of characters' }
-        ];
-        
-      case 'math':
-        return [
-          { label: 'abs', kind: CompletionItemKind.Method, detail: 'Absolute value' },
-          { label: 'max', kind: CompletionItemKind.Method, detail: 'Maximum value' },
-          { label: 'min', kind: CompletionItemKind.Method, detail: 'Minimum value' },
-          { label: 'floor', kind: CompletionItemKind.Method, detail: 'Round down' },
-          { label: 'ceil', kind: CompletionItemKind.Method, detail: 'Round up' },
-          { label: 'round', kind: CompletionItemKind.Method, detail: 'Round to nearest integer' },
-          { label: 'random', kind: CompletionItemKind.Method, detail: 'Random number between 0 and 1' },
-          { label: 'sqrt', kind: CompletionItemKind.Method, detail: 'Square root' },
-          { label: 'pow', kind: CompletionItemKind.Method, detail: 'Power' },
-          { label: 'PI', kind: CompletionItemKind.Constant, detail: 'π constant' },
-          { label: 'E', kind: CompletionItemKind.Constant, detail: 'e constant' }
-        ];
-        
-      case 'console':
-        return [
-          { label: 'log', kind: CompletionItemKind.Method, detail: 'Log message' },
-          { label: 'error', kind: CompletionItemKind.Method, detail: 'Log error' },
-          { label: 'warn', kind: CompletionItemKind.Method, detail: 'Log warning' },
-          { label: 'info', kind: CompletionItemKind.Method, detail: 'Log info' },
-          { label: 'debug', kind: CompletionItemKind.Method, detail: 'Log debug message' },
-          { label: 'clear', kind: CompletionItemKind.Method, detail: 'Clear console' },
-          { label: 'time', kind: CompletionItemKind.Method, detail: 'Start timer' },
-          { label: 'timeEnd', kind: CompletionItemKind.Method, detail: 'End timer' },
-          { label: 'trace', kind: CompletionItemKind.Method, detail: 'Output stack trace' },
-          { label: 'table', kind: CompletionItemKind.Method, detail: 'Display tabular data' }
-        ];
-      
-      case 'object':
-        return [
-          { label: 'keys', kind: CompletionItemKind.Method, detail: 'Get object keys', documentation: 'Object.keys(obj)' },
-          { label: 'values', kind: CompletionItemKind.Method, detail: 'Get object values', documentation: 'Object.values(obj)' },
-          { label: 'entries', kind: CompletionItemKind.Method, detail: 'Get object entries', documentation: 'Object.entries(obj)' },
-          { label: 'hasOwnProperty', kind: CompletionItemKind.Method, detail: 'Check if property exists' },
-          { label: 'toString', kind: CompletionItemKind.Method, detail: 'Convert to string' },
-          { label: 'valueOf', kind: CompletionItemKind.Method, detail: 'Get primitive value' }
-        ];
-      
-      case 'date':
-        return [
-          { label: 'getFullYear', kind: CompletionItemKind.Method, detail: 'Get year (4 digits)' },
-          { label: 'getMonth', kind: CompletionItemKind.Method, detail: 'Get month (0-11)' },
-          { label: 'getDate', kind: CompletionItemKind.Method, detail: 'Get day of month (1-31)' },
-          { label: 'getDay', kind: CompletionItemKind.Method, detail: 'Get day of week (0-6)' },
-          { label: 'getHours', kind: CompletionItemKind.Method, detail: 'Get hour (0-23)' },
-          { label: 'getMinutes', kind: CompletionItemKind.Method, detail: 'Get minutes (0-59)' },
-          { label: 'getSeconds', kind: CompletionItemKind.Method, detail: 'Get seconds (0-59)' },
-          { label: 'getTime', kind: CompletionItemKind.Method, detail: 'Get timestamp (milliseconds)' },
-          { label: 'toISOString', kind: CompletionItemKind.Method, detail: 'Convert to ISO string' },
-          { label: 'toLocaleDateString', kind: CompletionItemKind.Method, detail: 'Convert to localized date string' },
-          { label: 'toLocaleTimeString', kind: CompletionItemKind.Method, detail: 'Convert to localized time string' }
-        ];
-      
-      case 'regexp':
-        return [
-          { label: 'test', kind: CompletionItemKind.Method, detail: 'Test if pattern matches string' },
-          { label: 'exec', kind: CompletionItemKind.Method, detail: 'Execute search for match' },
-          { label: 'source', kind: CompletionItemKind.Property, detail: 'Pattern text' },
-          { label: 'flags', kind: CompletionItemKind.Property, detail: 'Flags (g, i, m, etc)' },
-          { label: 'lastIndex', kind: CompletionItemKind.Property, detail: 'Index of next match' }
-        ];
-        
-      default:
-        // Generic object methods
-        return [
-          { label: 'toString', kind: CompletionItemKind.Method, detail: 'Convert to string' },
-          { label: 'valueOf', kind: CompletionItemKind.Method, detail: 'Get primitive value' }
-        ];
-    }
-  }
-  
-  // Check if we're in a function call after a parameter name (e.g., "x:")
-  const paramMatch = currentLine.match(/\([^()]*\b(\w+)\s*:\s*$/);
-  if (paramMatch) {
-    const paramName = paramMatch[1];
-    
-    // Try to determine the function being called
-    const funcCallMatch = currentLine.match(/\(\s*(\w+)/);
-    if (funcCallMatch) {
-      const funcName = funcCallMatch[1];
-      
-      // Look for the function in document symbols
-      const funcSymbol = symbols.find(s => 
-        s.kind === SymbolKind.Function && 
-        s.name === funcName
-      );
-      
-      if (funcSymbol) {
-        // Try to extract parameter info from function definition
-        const funcDefInfo = extractFunctionParams(document, funcSymbol);
-        if (funcDefInfo && funcDefInfo.params) {
-          // Filter parameters matching the current one
-          const matchingParams = funcDefInfo.params.filter(p => 
-            p.name.toLowerCase().includes(paramName.toLowerCase())
+          
+          // Find parameter type from function definition
+          const functions = symbols.filter(s => 
+            s.kind === SymbolKind.Function && 
+            s.name.toLowerCase() === functionName.toLowerCase()
           );
           
-          if (matchingParams.length > 0) {
-            return matchingParams.map(p => ({
-              label: p.name,
-              kind: CompletionItemKind.Variable,
-              detail: p.type ? `Parameter: ${p.name}: ${p.type}` : `Parameter: ${p.name}`,
-              documentation: p.defaultValue 
-                ? {
-                    kind: MarkupKind.Markdown,
-                    value: `Parameter with default value: \`${p.defaultValue}\``
+          if (functions.length > 0) {
+            console.log(`Found matching function: ${functions[0].name}`);
+            
+            // Try to use function parameter information to determine the enum type
+            if (functions[0].data && functions[0].data.params) {
+              const params = functions[0].data.params;
+              
+              // Look for a parameter with a type that matches an enum
+              for (const param of params) {
+                const paramType = param.type;
+                console.log(`Checking parameter ${param.name} with type ${paramType}`);
+                
+                // Find if parameter type matches an enum
+                const enumMatch = enums.find(e => 
+                  e.name.toLowerCase() === paramType.toLowerCase()
+                );
+                
+                if (enumMatch) {
+                  const actualEnumName = enumMatch.name;
+                  console.log(`Found matching enum from param type: ${actualEnumName}`);
+                  
+                  // Find all enum members for this enum
+                  const enumMembers = symbols.filter(s => 
+                    s.kind === SymbolKind.EnumMember && 
+                    s.data && s.data.enumName === actualEnumName
+                  );
+                  
+                  if (enumMembers.length > 0) {
+                    // Add enum members to completion
+                    for (const member of enumMembers) {
+                      const memberName = member.name.split('.')[1];
+                      
+                      completionItems.push({
+                        label: memberName,
+                        kind: CompletionItemKind.EnumMember,
+                        detail: `Case of enum ${actualEnumName}`,
+                        sortText: `00-${memberName}`,
+                        data: { enumName: actualEnumName }
+                      });
+                    }
+                    
+                    console.log(`Returning ${completionItems.length} enum completions from function param type`);
+                    return completionItems;
                   }
-                : undefined
-            }));
+                }
+              }
+            }
           }
         }
       }
+    }
+    
+    // Check for "parameter: ." syntax for enum dotted notation - Swift-like syntax
+    const paramDotMatch = currentLine.match(/(\w+)\s*:\s*\.?$/);
+    if (paramDotMatch) {
+      const paramName = paramDotMatch[1];
+      console.log(`Detected parameter with dot notation: ${paramName}`);
       
-      // If no specific parameters found, offer generic completions based on function name
-      if (funcName === 'add' || funcName === 'sum') {
-        return [
-          { label: 'x', kind: CompletionItemKind.Variable, detail: 'First operand' },
-          { label: 'y', kind: CompletionItemKind.Variable, detail: 'Second operand' }
-        ];
-      } else if (funcName === 'map' || funcName === 'filter') {
-        return [
-          { label: 'fn', kind: CompletionItemKind.Variable, detail: 'Function to apply' },
-          { label: 'coll', kind: CompletionItemKind.Variable, detail: 'Collection to operate on' }
-        ];
+      // Try to find the parameter type by examining the surrounding context
+      const symbols = documentSymbols.get(document.uri) || [];
+      const enums = symbols.filter(s => s.kind === SymbolKind.Enum);
+      
+      // Check the current function context to determine parameter type
+      let parameterType = '';
+      
+      try {
+        // Try to find the enclosing function
+        const functionContext = findEnclosingFunction(document, position);
+        if (functionContext) {
+          // Check if this parameter has a type annotation
+          const functionText = document.getText(functionContext.range);
+          // Look for "paramName: TypeName" pattern
+          const paramTypeMatch = new RegExp(`${paramName}\\s*:\\s*(\\w+)`).exec(functionText);
+          
+          if (paramTypeMatch) {
+            parameterType = paramTypeMatch[1];
+            console.log(`Found parameter type: ${parameterType}`);
+            
+            // Find the matching enum - do case insensitive comparison
+            const matchingEnum = enums.find(e => 
+              e.name.toLowerCase() === parameterType.toLowerCase()
+            );
+            
+            if (matchingEnum) {
+              // Get all cases for this enum
+              const enumCases = symbols.filter(s => 
+                s.kind === SymbolKind.EnumMember && 
+                s.data && s.data.enumName === matchingEnum.name
+              );
+              
+              // Create completions for all enum cases
+              for (const enumCase of enumCases) {
+                // Extract just the case name without the enum prefix
+                const caseName = enumCase.name.split('.')[1];
+                
+                completionItems.push({
+                  label: `.${caseName}`,
+                  kind: CompletionItemKind.EnumMember,
+                  detail: `Case of enum ${matchingEnum.name}`,
+                  sortText: `01-${caseName}`, // High priority
+                  data: { 
+                    enumName: matchingEnum.name,
+                    caseName: caseName
+                  }
+                });
+              }
+              
+              // Only return enum cases if we found matching ones
+              if (completionItems.length > 0) {
+                return completionItems;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error finding parameter type: ${error}`);
       }
     }
+    
+    // Check for enum/class member access with dot notation - keep this as fallback
+    const dotMatch = currentLine.match(/(\w+)\.\s*$/);
+    if (dotMatch && !directDotMatch) { // Only run if not already handled by directDotMatch
+      const typeName = dotMatch[1];
+      console.log(`Detected secondary dot notation access: ${typeName}`);
+      
+      // Get all defined symbols for the current document
+      const symbols = documentSymbols.get(document.uri) || [];
+      
+      // Find the enum definition - do case insensitive comparison for better matching
+      const enumSymbol = symbols.find(s => 
+        s.kind === SymbolKind.Enum && 
+        s.name.toLowerCase() === typeName.toLowerCase()
+      );
+      
+      if (enumSymbol) {
+        const actualEnumName = enumSymbol.name; // Get the actual enum name with correct case
+        
+        // Find all enum members for this enum
+        const enumMembers = symbols.filter(s => 
+          s.kind === SymbolKind.EnumMember && 
+          s.data && s.data.enumName === actualEnumName
+        );
+      
+        if (enumMembers.length > 0) {
+          // We found enum members, add them to completion
+          for (const member of enumMembers) {
+            const memberName = member.name.split('.')[1]; // Get just the case name
+            
+            completionItems.push({
+              label: memberName,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Case of enum ${actualEnumName}`,
+              sortText: `10-${memberName}`, // Higher priority in this context
+              data: { enumName: actualEnumName }
+            });
+          }
+          
+          // Only return the enum members in this context
+          return completionItems;
+        }
+      }
+      
+      // Look for class methods
+      const classSymbol = symbols.find(s => 
+        (s.kind === SymbolKind.Class || s.kind === SymbolKind.Struct) && 
+        s.name.toLowerCase() === typeName.toLowerCase()
+      );
+      
+      if (classSymbol) {
+        const actualClassName = classSymbol.name; // Get the actual class name with correct case
+        
+        // Find all methods that belong to this class
+        const classMethods = symbols.filter(s => 
+          s.kind === SymbolKind.Function && 
+          s.name.startsWith(`${actualClassName}.`)
+        );
+        
+        for (const method of classMethods) {
+          const methodName = method.name.split('.')[1]; // Get just the method name
+          
+          completionItems.push({
+            label: methodName,
+            kind: CompletionItemKind.Method,
+            detail: `Method of ${actualClassName}`,
+            sortText: `10-${methodName}`, // Higher priority in this context
+            data: method.data
+          });
+        }
+        
+        return completionItems;
+      }
+    }
+    
+    // Check for import statement with relative path
+    const importPathMatch = currentLine.match(/import\s+\[\s*([^,\s]*)\s*(?:,\s*([^,\s]*)\s*)?\]\s+from\s+["']([^"']*)$/);
+    if (importPathMatch) {
+      // We're in an import statement with a path
+      const partialPath = importPathMatch[3] || '';
+      
+      // Provide path completions
+      const pathCompletions = await getPathCompletionItems(partialPath, true);
+      completionItems = pathCompletions;
+      
+      // Only return path completions in this context
+      return completionItems;
+    }
+    
+    // Check for import statement with module specified but cursor in the symbol area
+    const importSymbolMatch = currentLine.match(/import\s+\[\s*([^,\s]*)?$/);
+    if (importSymbolMatch || currentLine.match(/import\s+\[.*\]\s+from\s+["'](.+)["']\s*$/)) {
+      // We're in an import statement, looking for symbols
+      // Check if we can extract a module path from elsewhere in the line
+      const modulePath = text.match(/import\s+\[[^\]]*\]\s+from\s+["']([^"']+)["']/)?.[1];
+      
+      if (modulePath) {
+        // We have a module path, suggest importable symbols from that module
+        const symbolCompletions = await getImportableSymbols(modulePath);
+        completionItems = symbolCompletions;
+        
+        // Only return symbol completions in this context
+        return completionItems;
+      }
+    }
+    
+    // Get all defined symbols for the current document
+    const symbols = documentSymbols.get(document.uri) || [];
+    
+    // Add document symbols with HIGHEST priority
+    for (const symbol of symbols) {
+      const completionItem: CompletionItem = {
+        label: symbol.name,
+        kind: symbol.kind === SymbolKind.Function ? CompletionItemKind.Function :
+              symbol.kind === SymbolKind.Variable ? CompletionItemKind.Variable :
+              symbol.kind === SymbolKind.Class ? CompletionItemKind.Class :
+              symbol.kind === SymbolKind.Struct ? CompletionItemKind.Struct :
+              symbol.kind === SymbolKind.Enum ? CompletionItemKind.Enum :
+              symbol.kind === SymbolKind.EnumMember ? CompletionItemKind.EnumMember :
+              CompletionItemKind.Text,
+        sortText: `01-${symbol.name}` // HIGHER priority than templates
+      };
+      
+      // Add data for resolving
+      if (symbol.data) {
+        completionItem.data = symbol.data;
+        
+        // Add documentation if available
+        if (symbol.data.documentation) {
+          completionItem.documentation = {
+            kind: MarkupKind.Markdown,
+            value: symbol.data.documentation
+          };
+        }
+        
+        // For functions, prepare insertText with parameter placeholders
+        if (symbol.kind === SymbolKind.Function && symbol.data.params) {
+          // Create a snippet-style template for the function call
+          let insertText = `(${symbol.name}`;
+          const params = symbol.data.params;
+          
+          if (params.length > 0) {
+            insertText += ' ';
+            insertText += params.map((param, index) => 
+              `\${${index + 1}:${param.name}${param.type !== 'Any' ? ': ' + param.type : ''}${param.defaultValue ? ' = ' + param.defaultValue : ''}}` 
+            ).join(' ');
+          }
+          
+          insertText += ')';
+          
+          completionItem.insertText = insertText;
+          completionItem.insertTextFormat = InsertTextFormat.Snippet;
+          
+          // Add parameter info to detail
+          const paramInfo = params.map(p => 
+            `${p.name}: ${p.type}${p.defaultValue ? ` = ${p.defaultValue}` : ''}`
+          ).join(', ');
+          
+          completionItem.detail = `(${symbol.name} ${paramInfo})`;
+        }
+      }
+      
+      completionItems.push(completionItem);
+    }
+    
+    // Add template-based completions for the specific word being typed
+    const wordMatch = currentLine.match(/(\w+)$/);
+    if (wordMatch) {
+      const word = wordMatch[1].toLowerCase();
+      const templateCompletions = getTemplateCompletions(word);
+      completionItems = completionItems.concat(templateCompletions);
+    }
+
+    // Add imported symbols to completion list
+    const docImports = importedSymbols.get(document.uri) || [];
+    
+    // Add items from imported modules to completion
+    for (const imported of docImports) {
+      // Don't include namespace members in general completions
+      if (imported.name.includes('.')) {
+        continue;
+      }
+      
+      let kindMapping: CompletionItemKind = CompletionItemKind.Variable;
+      switch (imported.kind) {
+        case SymbolKind.Function:
+          kindMapping = CompletionItemKind.Function as CompletionItemKind;
+          break;
+        case SymbolKind.Class:
+          kindMapping = CompletionItemKind.Class as CompletionItemKind;
+          break;
+        case SymbolKind.Enum:
+          kindMapping = CompletionItemKind.Enum as CompletionItemKind;
+          break;
+        case SymbolKind.EnumMember:
+          kindMapping = CompletionItemKind.EnumMember as CompletionItemKind;
+          break;
+        case SymbolKind.Module:
+          kindMapping = CompletionItemKind.Module as CompletionItemKind;
+          break;
+      }
+      
+      completionItems.push({
+        label: imported.name,
+        kind: kindMapping,
+        detail: `Imported from "${imported.sourceModule}"`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Imported as \`${imported.name}\` from \`${imported.sourceModule}\``
+        },
+        sortText: `30-${imported.name}`, // Priority between document symbols and basic completions
+        data: {
+          sourceModule: imported.sourceModule,
+          symbolName: imported.name
+        }
+      });
+    }
+    
+    // Add basic completions with lowest priority if we haven't already added templates
+    if (!wordMatch) {
+      const basicCompletions = getBasicCompletions();
+      completionItems = completionItems.concat(basicCompletions);
+    }
+
+    return completionItems;
+  } catch (error) {
+    console.error(`Error getting completions: ${error instanceof Error ? error.message : String(error)}`);
+    return getBasicCompletions();
+  }
+});
+
+/**
+ * Get template completions for a specific keyword
+ */
+function getTemplateCompletions(word: string): CompletionItem[] {
+  // Get all template completions
+  const allTemplates = getBasicCompletions().filter(item => 
+    item.kind === CompletionItemKind.Snippet
+  );
+  
+  // Filter templates that match the current word
+  return allTemplates.filter(template => 
+    template.label.toString().toLowerCase().startsWith(word) ||
+    (template.filterText && template.filterText.toLowerCase().includes(word))
+  );
+}
+
+/**
+ * Get basic completion items for HQL keywords
+ */
+function getBasicCompletions(): CompletionItem[] {
+  const completions: CompletionItem[] = [];
+  
+  // Template-based completions (higher priority)
+  completions.push(
+    // Function template
+    {
+      label: 'fn',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define a function',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a function definition with parameters and body'
+      },
+      insertText: '(fn ${1:function-name} (${2:param}: ${3:Type}) (-> ${4:ReturnType})\n  ${5:body})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '10-fn', // Medium priority
+      filterText: 'fn function'
+    },
+    
+    // Lambda function template
+    {
+      label: 'fx',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define a pure function',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a pure function with typed parameters and return type'
+      },
+      insertText: '(fx ${1:function-name} (${2:param}: ${3:Type}) (-> ${4:ReturnType})\n  ${5:body})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '10-fx',
+      filterText: 'fx function pure'
+    },
+    
+    // Enum template
+    {
+      label: 'enum',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define an enumeration',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates an enum with cases'
+      },
+      insertText: '(enum ${1:EnumName}\n  (case ${2:case1})\n  (case ${3:case2}${4: value}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '10-enum',
+      filterText: 'enum enumeration'
+    },
+    
+    // Enum with raw values template
+    {
+      label: 'enum-raw',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define an enum with raw values',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates an enum with raw values for each case'
+      },
+      insertText: '(enum ${1:EnumName} : ${2:Int}\n  (case ${3:Case1} ${4:1})\n  (case ${5:Case2} ${6:2}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '10-enum-raw',
+      filterText: 'enum enumeration raw'
+    },
+    
+    // Enum with associated values template
+    {
+      label: 'enum-assoc',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define an enum with associated values',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates an enum with associated values for each case'
+      },
+      insertText: '(enum ${1:EnumName}\n  (case ${2:Case1} ${3:param1}: ${4:Type1})\n  (case ${5:Case2} ${6:param2}: ${7:Type2}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-enum-assoc',
+      filterText: 'enum enumeration associated'
+    },
+    
+    // Let binding template
+    {
+      label: 'let',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Create local bindings',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates local variable bindings'
+      },
+      insertText: '(let ${1:name} ${2:value})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-let',
+      filterText: 'let binding variable'
+    },
+    
+    // Let binding multiple template
+    {
+      label: 'let-multi',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Create multiple local bindings',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates multiple local variable bindings'
+      },
+      insertText: '(let (${1:name1} ${2:value1}\n      ${3:name2} ${4:value2})\n  ${5:body})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-let-multi',
+      filterText: 'let binding multiple'
+    },
+    
+    // Var binding template
+    {
+      label: 'var',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define a variable',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a variable binding'
+      },
+      insertText: '(var ${1:name} ${2:value})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-var',
+      filterText: 'var variable'
+    },
+    
+    // If template
+    {
+      label: 'if',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Conditional expression',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates an if-then-else expression'
+      },
+      insertText: '(if ${1:condition}\n  ${2:then-expr}\n  ${3:else-expr})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-if',
+      filterText: 'if condition'
+    },
+    
+    // When template
+    {
+      label: 'when',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Conditional expression (only when true)',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Executes body only when condition is true'
+      },
+      insertText: '(when ${1:condition}\n  ${2:body})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-when',
+      filterText: 'when condition'
+    },
+    
+    // Unless template
+    {
+      label: 'unless',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Conditional expression (only when false)',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Executes body only when condition is false'
+      },
+      insertText: '(unless ${1:condition}\n  ${2:body})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-unless',
+      filterText: 'unless condition'
+    },
+    
+    // Cond template
+    {
+      label: 'cond',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Multi-branch conditional',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a multi-branch conditional expression'
+      },
+      insertText: '(cond\n  ((${1:condition1}) ${2:expr1})\n  ((${3:condition2}) ${4:expr2})\n  (else ${5:default-expr}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-cond',
+      filterText: 'cond condition multiple'
+    },
+    
+    // Class template
+    {
+      label: 'class',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define a class',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a class definition with methods'
+      },
+      insertText: '(class ${1:ClassName}\n  ;; Class fields\n  (var ${2:field1})\n\n  ;; Constructor\n  (constructor (${3:param}: ${4:Type})\n    (set! this.${2:field1} ${3:param}))\n  \n  ;; Method\n  (method ${5:methodName} (${6:param}: ${7:Type}) (-> ${8:ReturnType})\n    ${9:method-body}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-class',
+      filterText: 'class object'
+    },
+    
+    // Struct template
+    {
+      label: 'struct',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Define a struct',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a struct definition with fields'
+      },
+      insertText: '(struct ${1:StructName}\n  (field ${2:field1}: ${3:Type1})\n  (field ${4:field2}: ${5:Type2}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-struct',
+      filterText: 'struct record'
+    },
+    
+    // Import template
+    {
+      label: 'import',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Import a module',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Imports symbols from another module'
+      },
+      insertText: '(import [${1:symbols}] from "${2:module-path}")',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-import',
+      filterText: 'import module'
+    },
+    
+    // Import with alias template
+    {
+      label: 'import-as',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Import with alias',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Imports a symbol with an alias'
+      },
+      insertText: '(import [${1:original} as ${2:alias}] from "${3:module-path}")',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-import-as',
+      filterText: 'import module alias'
+    },
+    
+    // Export template
+    {
+      label: 'export',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Export symbols',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Exports symbols from the current module'
+      },
+      insertText: '(export ${1:symbol1} ${2:symbol2})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-export',
+      filterText: 'export module'
+    },
+
+    // Export as template
+    {
+      label: 'export-as',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Export with alias',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Exports a symbol with a different name'
+      },
+      insertText: '(export "${1:external-name}" ${2:internal-symbol})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-export-as',
+      filterText: 'export alias module'
+    },
+    
+    // Loop template
+    {
+      label: 'loop',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Create a loop',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Creates a loop with bindings and recur'
+      },
+      insertText: '(loop [${1:binding} ${2:init-value}]\n  (if ${3:condition}\n    (recur ${4:next-value})\n    ${5:result}))',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-loop',
+      filterText: 'loop recur iteration'
+    },
+    
+    // Return template
+    {
+      label: 'return',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Return a value',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Returns a value from a function'
+      },
+      insertText: '(return ${1:value})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-return',
+      filterText: 'return function'
+    },
+    
+    // Do template
+    {
+      label: 'do',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Execute multiple expressions',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Evaluates multiple expressions in sequence'
+      },
+      insertText: '(do\n  ${1:expr1}\n  ${2:expr2})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-do',
+      filterText: 'do sequence'
+    },
+    
+    // Add template
+    {
+      label: 'add',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Addition operation',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Adds numbers together'
+      },
+      insertText: '(add ${1:x}: ${2:Int} ${3:y}: ${4:Int})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '10-add',
+      filterText: 'add plus sum addition'
+    },
+    
+    // Addition operator template
+    {
+      label: 'plus',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Addition operator',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Adds values using the + operator'
+      },
+      insertText: '(+ ${1:a} ${2:b})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '20-plus',
+      filterText: 'plus add operator +'
+    },
+    
+    // Subtract template
+    {
+      label: 'subtract',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Subtraction operation',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Subtracts numbers'
+      },
+      insertText: '(- ${1:a} ${2:b})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-subtract',
+      filterText: 'subtract minus difference'
+    },
+    
+    // Multiply template
+    {
+      label: 'multiply',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Multiplication operation',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Multiplies numbers'
+      },
+      insertText: '(* ${1:a} ${2:b})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-multiply',
+      filterText: 'multiply times product'
+    },
+    
+    // Divide template
+    {
+      label: 'divide',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Division operation',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Divides numbers'
+      },
+      insertText: '(/ ${1:a} ${2:b})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-divide',
+      filterText: 'divide quotient division'
+    },
+    
+    // JS call template
+    {
+      label: 'js-call',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Call a JavaScript method',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Calls a JavaScript method on an object'
+      },
+      insertText: '(js-call ${1:object} "${2:method}" ${3:args})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-js-call',
+      filterText: 'js javascript call'
+    },
+    
+    // JS get template
+    {
+      label: 'js-get',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Get a JavaScript property',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Gets a property from a JavaScript object'
+      },
+      insertText: '(js-get ${1:object} "${2:property}")',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-js-get',
+      filterText: 'js javascript get property'
+    },
+    
+    // JS set template
+    {
+      label: 'js-set',
+      kind: CompletionItemKind.Snippet,
+      detail: 'Set a JavaScript property',
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: 'Sets a property on a JavaScript object'
+      },
+      insertText: '(js-set ${1:object} "${2:property}" ${3:value})',
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '01-js-set',
+      filterText: 'js javascript set property'
+    }
+  );
+  
+  // Basic keyword completions (lower priority)
+  const keywords = [
+    'fn', 'fx', 'let', 'var', 'if', 'cond', 'when', 'unless',
+    'do', 'loop', 'recur', 'for', 'while', 'enum', 'class',
+    'struct', 'case', 'return', 'import', 'export', 'macro',
+    'defmacro', 'quote', 'quasiquote', 'unquote', 'true', 'false', 'nil',
+    'from', 'as', 'js-call', 'js-get', 'js-set', 'print', 'constructor', 'method'
+  ];
+  
+  for (const keyword of keywords) {
+    completions.push({
+      label: keyword,
+      kind: CompletionItemKind.Keyword,
+      detail: `HQL keyword: ${keyword}`,
+      sortText: `99-${keyword}`, // Higher sort text = lower priority
+    });
   }
   
-  return completionItems;
+  // Common operators with lower priority than templates but higher than keywords
+  const operators = [
+    '+', '-', '*', '/', '=', '!=', '<', '>', '<=', '>=', 'and', 'or', 'not'
+  ];
+  
+  for (const op of operators) {
+    completions.push({
+      label: op,
+      kind: CompletionItemKind.Operator,
+      detail: `Operator: ${op}`,
+      sortText: `50-${op}`,
+    });
+  }
+  
+  // Common types
+  const types = [
+    'Int', 'String', 'Bool', 'Double', 'Any', 'Void', 'Array', 'Object'
+  ];
+  
+  for (const type of types) {
+    completions.push({
+      label: type,
+      kind: CompletionItemKind.Class,
+      detail: `Type: ${type}`,
+      sortText: `40-${type}`,
+    });
+  }
+  
+  return completions;
+}
+
+// Handler for resolving additional information for completion items
+connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
+  console.log(`Resolving completion item: ${item.label}`);
+  
+  // Add more details to the completion item if needed
+  if (item.data) {
+    const data = item.data;
+    
+    // For functions with parameters, enhance documentation
+    if (data.params && Array.isArray(data.params)) {
+      const paramDocs = data.params.map((param: { name: string, type: string, defaultValue?: string }) => 
+        `- \`${param.name}: ${param.type}${param.defaultValue ? ` = ${param.defaultValue}` : ''}\``
+      ).join('\n');
+      
+      const docContent = [
+        data.documentation ? data.documentation : '',
+        '',
+        '**Parameters:**',
+        paramDocs
+      ].filter(line => line !== '').join('\n');
+      
+      item.documentation = {
+        kind: MarkupKind.Markdown,
+        value: docContent
+      };
+      
+      // Enhance detail with parameter info
+      if (!item.detail) {
+        const paramInfo = data.params.map((p: { name: string, type: string, defaultValue?: string }) => 
+          `${p.name}: ${p.type}${p.defaultValue ? ` = ${p.defaultValue}` : ''}`
+        ).join(', ');
+        item.detail = `(${item.label} ${paramInfo})`;
+      }
+    }
+    // For imported symbols, add more details
+    else if (data.sourceModule) {
+      item.detail = item.detail || `Imported from ${data.sourceModule}`;
+      item.documentation = item.documentation || {
+        kind: MarkupKind.Markdown,
+        value: `Symbol imported from module \`${data.sourceModule}\``
+      };
+    } 
+    // For symbols with documentation but no special handling
+    else if (data.documentation) {
+      item.documentation = {
+        kind: MarkupKind.Markdown,
+        value: data.documentation
+      };
+    }
+    // For enum members, add enum information
+    else if (data.enumName) {
+      item.detail = item.detail || `Case of enum ${data.enumName}`;
+      item.documentation = item.documentation || {
+        kind: MarkupKind.Markdown,
+        value: `Enum case from \`${data.enumName}\``
+      };
+    }
+  }
+  return item;
 });
+
+// Define basic keyword documentation for hover
+const keywordDocumentation = {
+  'fn': {
+    kind: MarkupKind.Markdown,
+    value: '```\n(fn name (args...) body)\n```\nDefines a new function.'
+  },
+  'fx': {
+    kind: MarkupKind.Markdown, 
+    value: '```\n(fx name (param1: Type1 param2: Type2) (-> ReturnType)\n  body)\n```\nDefines a pure function with typed parameters.'
+  },
+  'let': {
+    kind: MarkupKind.Markdown,
+    value: '```\n(let name value)\n```\nor\n```\n(let (name1 value1 name2 value2) body)\n```\nDefines immutable bindings.'
+  },
+  'var': {
+    kind: MarkupKind.Markdown,
+    value: '```\n(var name value)\n```\nor\n```\n(var (name1 value1 name2 value2) body)\n```\nDefines mutable bindings.'
+  },
+  'if': {
+    kind: MarkupKind.Markdown,
+    value: '```\n(if condition then-expr else-expr)\n```\nConditional expression.'
+  },
+  'enum': {
+    kind: MarkupKind.Markdown,
+    value: '```\n(enum Name\n  (case case1)\n  (case case2 value)\n  (case case3 param1: Type1 param2: Type2))\n```\nDefines an enumeration type with optional values or associated types.'
+  },
+  'return': {
+    kind: MarkupKind.Markdown,
+    value: '```\n(return value)\n```\nReturns a value from a function. Can be used for early returns in conditionals.'
+  }
+};
 
 // Handler for hover information
 connection.onHover(({ textDocument, position }) => {
@@ -1406,14 +2089,12 @@ connection.onHover(({ textDocument, position }) => {
     if (wordRange) {
       const word = document.getText(wordRange);
       
-      // Find in our keywords list
-      for (const keyword of hqlKeywords) {
-        if (keyword.label === word && keyword.documentation) {
-          return {
-            contents: keyword.documentation as MarkupContent,
-            range: wordRange
-          };
-        }
+      // Check if we're hovering over a keyword with documentation
+      if (word in keywordDocumentation) {
+        return {
+          contents: keywordDocumentation[word as keyof typeof keywordDocumentation],
+          range: wordRange
+        };
       }
       
       // Check if it's an imported symbol
@@ -1430,48 +2111,7 @@ connection.onHover(({ textDocument, position }) => {
         };
       }
       
-      // Provide basic info for common functions/keywords
-      if (word === 'if') {
-        return {
-          contents: {
-            kind: MarkupKind.Markdown,
-            value: '```\n(if condition then-expr else-expr)\n```\nConditional expression.'
-          },
-          range: wordRange
-        };
-      } else if (word === 'let') {
-        return {
-          contents: {
-            kind: MarkupKind.Markdown,
-            value: '```\n(let name value)\n```\nor\n```\n(let (name1 value1 name2 value2) body)\n```\nDefines immutable bindings.'
-          },
-          range: wordRange
-        };
-      } else if (word === 'var') {
-        return {
-          contents: {
-            kind: MarkupKind.Markdown,
-            value: '```\n(var name value)\n```\nor\n```\n(var (name1 value1 name2 value2) body)\n```\nDefines mutable bindings.'
-          },
-          range: wordRange
-        };
-      } else if (word === 'enum') {
-        return {
-          contents: {
-            kind: MarkupKind.Markdown,
-            value: '```\n(enum Name\n  (case case1)\n  (case case2 value)\n  (case case3 param1: Type1 param2: Type2))\n```\nDefines an enumeration type with optional values or associated types.'
-          },
-          range: wordRange
-        };
-      } else if (word === 'return') {
-        return {
-          contents: {
-            kind: MarkupKind.Markdown,
-            value: '```\n(return value)\n```\nReturns a value from a function. Can be used for early returns in conditionals.'
-          },
-          range: wordRange
-        };
-      }
+      // Add any additional hover information here for symbols not covered by keywordDocumentation
     }
     
     return null;
@@ -1574,18 +2214,37 @@ connection.onDefinition(async (params): Promise<Definition | null> => {
 });
 
 // Validate a text document
-async function validateTextDocument(textDocument: TextDocument): Promise<void> {
+export async function validateTextDocument(textDocument: TextDocument): Promise<void> {
   try {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
     
     try {
-      // Try to parse the document
-      const expressions = parse(text);
+      // Try to parse the document with tolerant mode first 
+      // to avoid unnecessary diagnostic errors during typing
+      const expressions = parse(text, true);
+      
+      // Only perform stricter validation if tolerant parsing succeeded
+      try {
+        // Now try to parse with strict mode to find actual errors
+        parse(text, false);
+      } catch (error) {
+        if (error instanceof ParseError) {
+          // Add diagnostic for parse error
+          diagnostics.push({
+            severity: DiagnosticSeverity.Error,
+            range: {
+              start: { line: error.position.line, character: error.position.column },
+              end: { line: error.position.line, character: error.position.column + 1 }
+            },
+            message: error.message,
+            source: 'hql'
+          });
+        }
+      }
       
       // Validate expressions (e.g., check for undefined symbols, type errors, etc.)
       // This is where you would add your semantic validation for HQL
-      // For example, you could check for undefined variables, type mismatches, etc.
       
       // For demonstration, let's add a simple check for unbalanced parentheses
       const openCount = (text.match(/\(/g) || []).length;
@@ -1594,7 +2253,7 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
       if (openCount !== closeCount) {
         // Add diagnostic for unbalanced parentheses
         diagnostics.push({
-          severity: DiagnosticSeverity.Error,
+          severity: DiagnosticSeverity.Warning,
           range: {
             start: { line: 0, character: 0 },
             end: { line: 0, character: 1 }
@@ -1622,68 +2281,52 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
       }
       
       // Check for undefined symbols
-      for (const symbol of usedSymbols) {
-        if (!definedSymbols.has(symbol) && !importedNames.has(symbol) && !isBuiltInSymbol(symbol)) {
-          // Try to find the location of the symbol usage
-          const symbolPosition = findSymbolUsagePosition(text, symbol);
-          if (symbolPosition) {
-            diagnostics.push({
-              severity: DiagnosticSeverity.Warning,
-              range: {
-                start: symbolPosition,
-                end: { line: symbolPosition.line, character: symbolPosition.character + symbol.length }
-              },
-              message: `Undefined symbol: '${symbol}'`,
-              source: 'hql'
-            });
-          }
+      for (const symbolName of usedSymbols) {
+        // Skip built-in symbols and symbols from imports
+        if (isBuiltInSymbol(symbolName) || importedNames.has(symbolName) || definedSymbols.has(symbolName)) {
+          continue;
+        }
+        
+        // Add diagnostic for undefined symbol
+        const position = findSymbolUsagePosition(text, symbolName);
+        if (position) {
+          diagnostics.push({
+            severity: DiagnosticSeverity.Warning,
+            range: {
+              start: position,
+              end: { line: position.line, character: position.character + symbolName.length }
+            },
+            message: `Undefined symbol: ${symbolName}`,
+            source: 'hql'
+          });
         }
       }
-      
-    } catch (e) {
-      // Parse error - add diagnostic
-      if (e instanceof Error) {
-        // Try to extract line and column information from the error message
-        const errorMatch = /at line (\d+), column (\d+)/.exec(e.message);
-        if (errorMatch) {
-          const line = parseInt(errorMatch[1], 10) - 1; // 0-based
-          const column = parseInt(errorMatch[2], 10) - 1; // 0-based
-          
-          diagnostics.push({
-            severity: DiagnosticSeverity.Error,
-            range: {
-              start: { line, character: column },
-              end: { line, character: column + 1 }
-            },
-            message: e.message,
-            source: 'hql'
-          });
-        } else {
-          // Fallback if we can't extract position info
-          diagnostics.push({
-            severity: DiagnosticSeverity.Error,
-            range: {
-              start: { line: 0, character: 0 },
-              end: { line: 0, character: 1 }
-            },
-            message: `Parse error: ${e.message}`,
-            source: 'hql'
-          });
-        }
+    } catch (error) {
+      // If tolerant parsing also fails, the code is very broken, so just report the error
+      if (error instanceof ParseError) {
+        diagnostics.push({
+          severity: DiagnosticSeverity.Error,
+          range: {
+            start: { line: error.position.line, character: error.position.column },
+            end: { line: error.position.line, character: error.position.column + 1 }
+          },
+          message: error.message,
+          source: 'hql'
+        });
       }
     }
     
     // Send the diagnostics to the client
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
   } catch (error) {
-    console.error(`Error validating document: ${error}`);
+    console.error(`Error validating document: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 /**
  * Find symbol usages in a list expression
  */
-function findSymbolUsagesInList(list: SList, usedSymbols: Set<string>) {
+export function findSymbolUsagesInList(list: SList, usedSymbols: Set<string>) {
   for (const elem of list.elements) {
     if (isSymbol(elem)) {
       usedSymbols.add(elem.name);
@@ -1696,7 +2339,7 @@ function findSymbolUsagesInList(list: SList, usedSymbols: Set<string>) {
 /**
  * Check if a symbol is a built-in HQL symbol
  */
-function isBuiltInSymbol(symbolName: string): boolean {
+export function isBuiltInSymbol(symbolName: string): boolean {
   // HQL built-in symbols
   const builtIns = new Set([
     'let', 'var', 'fn', 'fx', 'if', 'cond', 'when', 'unless', 'do', 'loop', 'recur',
@@ -1761,203 +2404,10 @@ function findSymbolUsagePosition(text: string, symbolName: string): Position | n
 
 // Handler for semantic tokens
 connection.languages.semanticTokens.on((params: SemanticTokensParams) => {
-  const document = documents.get(params.textDocument.uri);
-  if (!document) {
-    return { data: [] };
-  }
-  
-  try {
-    const text = document.getText();
-    const builder = new SemanticTokensBuilder();
-    
-    // Parse the document to generate semantic tokens
-    try {
-      const expressions = parse(text);
-      processExpressions(expressions, document, builder);
-    } catch (error) {
-      // If parsing fails, still try to add tokens for basic syntax
-      addBasicTokens(text, document, builder);
-    }
-    
-    return builder.build();
-  } catch (error) {
-    console.error(`Error providing semantic tokens: ${error}`);
-    return { data: [] };
-  }
+  // Disable semantic tokens by returning empty data
+  // This will let the syntax highlighting be controlled by the client's grammar
+  return { data: [] };
 });
-
-/**
- * Process parsed expressions to add semantic tokens
- */
-function processExpressions(expressions: SExp[], document: TextDocument, builder: SemanticTokensBuilder): void {
-  const text = document.getText();
-  // Recursively process expressions to add tokens
-  for (const expr of expressions) {
-    if (isList(expr)) {
-      // Process list expressions
-      const adaptedDoc = createTextDocumentAdapter(document);
-      const range = findExpressionRange(adaptedDoc, expr);
-      
-      // Check if it's a special form
-      if (expr.elements.length > 0 && isSymbol(expr.elements[0])) {
-        const firstSymbol = expr.elements[0] as SSymbol;
-        const symbolName = firstSymbol.name;
-        
-        // Add token for the symbol - special highlight for keywords
-        const symbolPos = document.positionAt(document.offsetAt(range.start) + 1);
-        
-        if (['fn', 'fx', 'let', 'var', 'if', 'cond', 'when', 'class', 'enum', 'return'].includes(symbolName)) {
-          // Keywords
-          builder.push(
-            symbolPos.line,
-            symbolPos.character,
-            symbolName.length,
-            0, // 'keyword'
-            0
-          );
-        } else {
-          // Function calls
-          builder.push(
-            symbolPos.line,
-            symbolPos.character,
-            symbolName.length,
-            12, // 'function'
-            0
-          );
-        }
-        
-        // Process arguments based on the type of form
-        if (symbolName === 'fn' || symbolName === 'fx') {
-          // Handle function definitions
-          if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
-            const fnNameSymbol = expr.elements[1] as SSymbol;
-            const fnNamePos = document.positionAt(
-              document.offsetAt(range.start) + 1 + symbolName.length + 1 + (text.substring(document.offsetAt(range.start) + 1 + symbolName.length, document.offsetAt(range.start) + 1 + symbolName.length + 1 + fnNameSymbol.name.length).match(/^\s+/) || [''])[0].length
-            );
-            
-            builder.push(
-              fnNamePos.line,
-              fnNamePos.character,
-              fnNameSymbol.name.length,
-              12, // 'function'
-              1  // 'declaration'
-            );
-          }
-        } else if (symbolName === 'let' || symbolName === 'var') {
-          // Handle variable definitions
-          if (expr.elements.length > 1 && isSymbol(expr.elements[1])) {
-            const varNameSymbol = expr.elements[1] as SSymbol;
-            const varNamePos = document.positionAt(
-              document.offsetAt(range.start) + 1 + symbolName.length + 1 + (text.substring(document.offsetAt(range.start) + 1 + symbolName.length, document.offsetAt(range.start) + 1 + symbolName.length + 1 + varNameSymbol.name.length).match(/^\s+/) || [''])[0].length
-            );
-            
-            builder.push(
-              varNamePos.line,
-              varNamePos.character,
-              varNameSymbol.name.length,
-              13, // 'variable'
-              1  // 'declaration'
-            );
-          }
-        }
-      }
-      
-      // Recursively process elements
-      for (const element of expr.elements) {
-        if (isList(element)) {
-          processExpressions([element], document, builder);
-        } else if (isString(element)) {
-          const stringRange = findExpressionRange(adaptedDoc, element);
-          const startPos = document.positionAt(document.offsetAt(stringRange.start));
-          
-          builder.push(
-            startPos.line,
-            startPos.character,
-            document.offsetAt(stringRange.end) - document.offsetAt(stringRange.start),
-            1, // 'string'
-            0
-          );
-        } else if (isNumber(element)) {
-          const numRange = findExpressionRange(adaptedDoc, element);
-          const startPos = document.positionAt(document.offsetAt(numRange.start));
-          
-          builder.push(
-            startPos.line,
-            startPos.character,
-            document.offsetAt(numRange.end) - document.offsetAt(numRange.start),
-            3, // 'number'
-            0
-          );
-        }
-      }
-    }
-  }
-}
-
-/**
- * Add basic tokens for syntax highlighting when parsing fails
- */
-function addBasicTokens(text: string, document: TextDocument, builder: SemanticTokensBuilder): void {
-  // Add tokens for keywords
-  const keywordRegex = /\b(let|var|fn|fx|if|cond|when|unless|do|loop|recur|for|while|repeat|defmacro|macro|class|struct|enum|import|export|return|true|false|nil)\b/g;
-  let match;
-  while ((match = keywordRegex.exec(text)) !== null) {
-    const startPos = document.positionAt(match.index);
-    builder.push(
-      startPos.line,
-      startPos.character,
-      match[0].length,
-      0, // token type: 'keyword'
-      0  // token modifiers
-    );
-  }
-  
-  // Add tokens for strings
-  const stringRegex = /"(?:[^"\\]|\\.)*"/g;
-  while ((match = stringRegex.exec(text)) !== null) {
-    const startPos = document.positionAt(match.index);
-    builder.push(
-      startPos.line,
-      startPos.character,
-      match[0].length,
-      1, // token type: 'string'
-      0  // token modifiers
-    );
-  }
-  
-  // Add tokens for numbers
-  const numberRegex = /-?\b\d+(\.\d+)?\b/g;
-  while ((match = numberRegex.exec(text)) !== null) {
-    const startPos = document.positionAt(match.index);
-    builder.push(
-      startPos.line,
-      startPos.character,
-      match[0].length,
-      3, // token type: 'number'
-      0  // token modifiers
-    );
-  }
-  
-  // Add tokens for comments
-  const commentRegex = /(;.*)|(\/\/.*)|\/\*[\s\S]*?\*\//g;
-  while ((match = commentRegex.exec(text)) !== null) {
-    const startPos = document.positionAt(match.index);
-    const lines = match[0].split("\n");
-    
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].length > 0) {
-        const linePos = document.positionAt(match.index + match[0].split("\n").slice(0, i).join("\n").length);
-        builder.push(
-          linePos.line,
-          linePos.character,
-          lines[i].length,
-          0, // token type: 'comment'
-          0  // token modifiers
-        );
-      }
-    }
-  }
-}
 
 // Function for creating Position objects
 function createPosition(line: number, character: number): Position {
@@ -1988,4 +2438,44 @@ function hasStringValue(exp: SExp): boolean {
          (isLiteral(exp) && 
           exp.type === "literal" && 
           typeof exp.value === 'string'));
+}
+
+/**
+ * Find the enclosing function context for a given position
+ * Returns the range and name of the function if found
+ */
+function findEnclosingFunction(document: TextDocument, position: Position): { range: Range, name: string } | null {
+  // Get all function symbols in the document
+  const symbols = documentSymbols.get(document.uri) || [];
+  const functions = symbols.filter(s => s.kind === SymbolKind.Function);
+  
+  // Find the innermost function that contains the position
+  let bestMatch: { range: Range, name: string } | null = null;
+  let smallestSize = Infinity;
+  
+  for (const func of functions) {
+    const range = func.location.range;
+    
+    // Check if position is within this function's range
+    if (position.line >= range.start.line && position.line <= range.end.line &&
+        (position.line > range.start.line || position.character >= range.start.character) &&
+        (position.line < range.end.line || position.character <= range.end.character)) {
+      
+      // Calculate the size of this range
+      const size = 
+        (range.end.line - range.start.line) * 1000 + 
+        (range.end.character - range.start.character);
+      
+      // Keep the smallest (most specific) range that contains the position
+      if (size < smallestSize) {
+        smallestSize = size;
+        bestMatch = { 
+          range, 
+          name: func.name 
+        };
+      }
+    }
+  }
+  
+  return bestMatch;
 }

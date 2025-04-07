@@ -1,6 +1,6 @@
 import { Range, Position } from 'vscode-languageserver';
-import { parse } from '../parser';
-import { SExp, SList, SSymbol, isList, isSymbol, sexpToString } from '../s-exp/types';
+import { parse, SExp, SList } from '../parser';
+import { SSymbol, isList, isSymbol, sexpToString } from '../s-exp/types';
 import { ITextDocument, createTextDocumentAdapter } from '../document-adapter';
 
 /**
@@ -191,26 +191,163 @@ function containsPosition(range: Range, position: Position): boolean {
 }
 
 /**
- * Gets the current S-expression under the cursor
+ * Get the current expression containing the cursor position
+ * Used for finding the context for completions
+ * @param document The document to analyze
+ * @param position The cursor position
+ * @param tolerant Whether to use tolerant parsing for incomplete code
+ * @returns The expression at the cursor position, or undefined if not found
  */
-export function getCurrentExpression(document: ITextDocument, position: Position): SExp | null {
+export function getCurrentExpression(document: ITextDocument, position: Position, tolerant: boolean = false): SExp | undefined {
   try {
+    // Get the text of the document
     const text = document.getText();
-    const expressions = parse(text);
     
-    // Find the expression that contains the cursor position
-    for (const exp of expressions) {
-      const range = findExpressionRange(document, exp);
-      if (containsPosition(range, position)) {
-        return exp;
+    // Try to parse the entire document with tolerant parsing
+    let expressions: SExp[] = [];
+    try {
+      expressions = parse(text, tolerant);
+    } catch (error) {
+      // Even if full document parsing fails, try to find a local expression
+      // For this case, we'll try to extract just the current line
+      const currentLine = document.getText({
+        start: { line: position.line, character: 0 },
+        end: { line: position.line + 1, character: 0 }
+      });
+      
+      // If the current line has content, try to parse just that line
+      if (currentLine.trim()) {
+        try {
+          // Try to add parentheses if needed for a valid expression
+          const wrappedLine = `(${currentLine.trim()})`;
+          const lineExpressions = parse(wrappedLine, true);
+          if (lineExpressions.length > 0 && isList(lineExpressions[0])) {
+            // If we got a valid expression, use its inner elements
+            const innerElements = (lineExpressions[0] as SList).elements;
+            if (innerElements.length > 0) {
+              // Return the first inner element as our expression
+              return innerElements[0];
+            }
+          }
+        } catch (lineError) {
+          // If line parsing fails, we'll fall back to returning a simple symbol
+          return {
+            type: "symbol",
+            name: currentLine.trim()
+          };
+        }
+      }
+      
+      // If all parsing attempts fail, create a simple symbol from any word at the cursor
+      const wordAtCursor = getWordAtPosition(document, position);
+      if (wordAtCursor) {
+        return {
+          type: "symbol",
+          name: wordAtCursor
+        };
+      }
+      
+      // If we can't even find a word, give up
+      return undefined;
+    }
+    
+    // Find the deepest expression containing the cursor position
+    let containingExpr: SExp | undefined = undefined;
+    let minDist = Number.MAX_SAFE_INTEGER;
+    
+    for (const expr of expressions) {
+      // Skip non-list expressions at the top level
+      if (!isList(expr)) continue;
+      
+      // Check if this expression contains the cursor position
+      const range = findExpressionRange(document, expr);
+      if (isPositionInRange(position, range)) {
+        // Calculate how "deep" this expression is
+        const distToStart = Math.abs(position.line - range.start.line) + 
+                           Math.abs(position.character - range.start.character);
+        const distToEnd = Math.abs(position.line - range.end.line) + 
+                         Math.abs(position.character - range.end.character);
+        const dist = Math.min(distToStart, distToEnd);
+        
+        if (dist < minDist) {
+          minDist = dist;
+          containingExpr = expr;
+        }
+        
+        // Look for a more specific nested expression
+        if (isList(expr)) {
+          const nestedExpr = findContainingExpr(document, expr as SList, position);
+          if (nestedExpr) {
+            const nestedRange = findExpressionRange(document, nestedExpr);
+            const nestedDistToStart = Math.abs(position.line - nestedRange.start.line) + 
+                                     Math.abs(position.character - nestedRange.start.character);
+            const nestedDistToEnd = Math.abs(position.line - nestedRange.end.line) + 
+                                   Math.abs(position.character - nestedRange.end.character);
+            const nestedDist = Math.min(nestedDistToStart, nestedDistToEnd);
+            
+            if (nestedDist < minDist) {
+              minDist = nestedDist;
+              containingExpr = nestedExpr;
+            }
+          }
+        }
       }
     }
     
-    return null;
-  } catch (e) {
-    console.error('Error getting current expression:', e);
-    return null;
+    return containingExpr;
+  } catch (error) {
+    // Instead of propagating the error which would crash the LSP,
+    // log it and return undefined
+    console.error(`Error getting current expression: ${error}`);
+    return undefined;
   }
+}
+
+/**
+ * Helper function to find the most specific expression containing a position
+ */
+function findContainingExpr(document: ITextDocument, expr: SList, position: Position): SExp | undefined {
+  for (const element of expr.elements) {
+    if (isList(element)) {
+      const range = findExpressionRange(document, element);
+      if (isPositionInRange(position, range)) {
+        // Check if there's an even deeper match
+        const nested = findContainingExpr(document, element as SList, position);
+        return nested || element;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Gets the word at the given position
+ */
+function getWordAtPosition(document: ITextDocument, position: Position): string | undefined {
+  // Get the text of the document
+  const text = document.getText();
+  const offset = document.offsetAt(position);
+  
+  // Define word characters
+  const wordPattern = /[a-zA-Z0-9_\-\+\*\/\?\!\>\<\=\%\&\.\:\[\]\{\}\(\)]/;
+  
+  // Find the start of the word
+  let start = offset;
+  while (start > 0 && wordPattern.test(text.charAt(start - 1))) {
+    start--;
+  }
+  
+  // Find the end of the word
+  let end = offset;
+  while (end < text.length && wordPattern.test(text.charAt(end))) {
+    end++;
+  }
+  
+  if (start === end) {
+    return undefined;
+  }
+  
+  return text.substring(start, end);
 }
 
 /**
@@ -543,17 +680,10 @@ function findExpressionByDelimiters(text: string, offset: number, adaptedDoc: IT
  * Check if a position is contained within a range
  */
 function isPositionInRange(position: Position, range: Range): boolean {
-  if (position.line < range.start.line || position.line > range.end.line) {
-    return false;
-  }
-  
-  if (position.line === range.start.line && position.character < range.start.character) {
-    return false;
-  }
-  
-  if (position.line === range.end.line && position.character > range.end.character) {
-    return false;
-  }
-  
-  return true;
+  return (
+    (position.line > range.start.line || 
+     (position.line === range.start.line && position.character >= range.start.character)) &&
+    (position.line < range.end.line || 
+     (position.line === range.end.line && position.character <= range.end.character))
+  );
 }

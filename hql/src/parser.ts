@@ -37,9 +37,17 @@ export class ParseError extends Error {
     source?: string,
   ) {
     super(message);
-    this.name = "ParseError";
+    this.name = 'ParseError';
     this.position = position;
     this.source = source;
+    
+    if (source) {
+      // Include source context in the error message
+      const lines = source.split('\n');
+      const line = lines[position.line] || '';
+      const pointer = ' '.repeat(position.column) + '^';
+      this.message = `${message} at line ${position.line + 1}, column ${position.column + 1}\n${line}\n${pointer}`;
+    }
   }
 }
 
@@ -91,11 +99,30 @@ const TOKEN_PATTERNS = {
 /**
  * Parse HQL source code into S-expressions
  * @param input The HQL source code to parse
+ * @param tolerant Whether to tolerate incomplete expressions (for use in editor)
  * @returns Array of S-expressions
  */
-export function parse(input: string): SExp[] {
-  const tokens = tokenize(input);
-  return parseTokens(tokens, input);
+export function parse(input: string, tolerant: boolean = false): SExp[] {
+  try {
+    // Tokenize the input
+    const tokens = tokenize(input);
+    
+    // Filter out comments and whitespace
+    const filteredTokens = tokens.filter(token => 
+      token.type !== TokenType.Comment && 
+      token.type !== TokenType.Whitespace
+    );
+    
+    // Parse the tokens into s-expressions
+    return parseTokens(filteredTokens, input, tolerant);
+  } catch (e) {
+    if (tolerant && e instanceof ParseError) {
+      // In tolerant mode, return partial results for incomplete code
+      // This helps prevent disrupting LSP features during editing
+      return [];
+    }
+    throw e;
+  }
 }
 
 /**
@@ -193,22 +220,37 @@ function getTokenTypeForSpecial(value: string): TokenType {
 /**
  * Parse tokens into S-expressions
  */
-function parseTokens(tokens: Token[], input: string): SExp[] {
-  const state: ParserState = { tokens, currentPos: 0, input };
+function parseTokens(tokens: Token[], input: string, tolerant: boolean = false): SExp[] {
+  const state: ParserState = { tokens, currentPos: 0, input, tolerant };
   const nodes: SExp[] = [];
   while (state.currentPos < state.tokens.length) {
-    nodes.push(parseExpression(state));
+    try {
+      nodes.push(parseExpression(state));
+    } catch (e) {
+      if (tolerant && e instanceof ParseError) {
+        // In tolerant mode, try to skip the problematic token and continue
+        state.currentPos++;
+        if (state.currentPos < state.tokens.length) {
+          // Add a placeholder for the problematic expression
+          nodes.push(createSymbol("incomplete-expression"));
+        }
+      } else {
+        // In strict mode, propagate the error
+        throw e;
+      }
+    }
   }
   return nodes;
 }
 
 /**
- * Parser state interface
+ * Parser state for tracking current position
  */
 interface ParserState {
   tokens: Token[];
   currentPos: number;
   input: string;
+  tolerant?: boolean;
 }
 
 /**
@@ -323,93 +365,129 @@ function parseList(state: ParserState): SList {
     state.currentPos < state.tokens.length &&
     state.tokens[state.currentPos].type !== TokenType.RightParen
   ) {
-    // Special handling for enum syntax with separate colon
-    if (isEnum && elements.length === 2 && 
-        state.tokens[state.currentPos].type === TokenType.Colon) {
-      
-      // Skip the colon token
-      state.currentPos++;
-      
-      // Ensure we have a type after the colon
-      if (state.currentPos < state.tokens.length && 
-          state.tokens[state.currentPos].type === TokenType.Symbol) {
+    // Try to parse the next element
+    try {
+      // Special handling for enum syntax with separate colon
+      if (isEnum && elements.length === 2 && 
+          state.tokens[state.currentPos].type === TokenType.Colon) {
         
-        // Get the enum name (already parsed) and the type
-        const enumNameSym = elements[1] as SSymbol;
-        const typeName = state.tokens[state.currentPos].value;
-        
-        // Replace the enum name with combined enum name and type
-        elements[1] = createSymbol(`${enumNameSym.name}:${typeName}`);
-        
-        // Skip the type token since we've incorporated it
+        // Skip the colon token
         state.currentPos++;
-      } else {
-        throw new ParseError(
-          "Expected type name after colon in enum declaration", 
-          state.tokens[state.currentPos - 1].position, 
-          state.input
-        );
+        
+        // Ensure we have a type after the colon
+        if (state.currentPos < state.tokens.length && 
+            state.tokens[state.currentPos].type === TokenType.Symbol) {
+          
+          // Get the enum name (already parsed) and the type
+          const enumNameSym = elements[1] as SSymbol;
+          const typeName = state.tokens[state.currentPos].value;
+          
+          // Replace the enum name with combined enum name and type
+          elements[1] = createSymbol(`${enumNameSym.name}:${typeName}`);
+          
+          // Skip the type token since we've incorporated it
+          state.currentPos++;
+        } else {
+          if (state.tolerant) {
+            // In tolerant mode, add a placeholder and continue
+            elements.push(createSymbol("incomplete-type"));
+            if (state.currentPos < state.tokens.length) {
+              state.currentPos++; // Skip problematic token
+            }
+          } else {
+            throw new ParseError(
+              "Expected type name after colon in enum declaration", 
+              state.tokens[state.currentPos - 1].position, 
+              state.input
+            );
+          }
+        }
       }
-    } 
-    // Special handling for function type expressions like (-> [String])
-    else if (fnKeywordFound && 
-             state.tokens[state.currentPos].type === TokenType.Symbol &&
-             state.tokens[state.currentPos].value === "->") {
-      
-      // Mark that we found an arrow token
-      arrowFound = true;
-      
-      // Add the arrow symbol
-      elements.push(parseExpression(state));
-      
-      // Check if the next token is a left bracket (array type)
-      if (state.currentPos < state.tokens.length && 
-          state.tokens[state.currentPos].type === TokenType.LeftBracket) {
+      // Special handling for function type expressions like (-> [String])
+      else if (fnKeywordFound && 
+               state.tokens[state.currentPos].type === TokenType.Symbol &&
+               state.tokens[state.currentPos].value === "->") {
         
-        // This is an array type notation - preserve it directly
-        const arrayTypeStartToken = state.tokens[state.currentPos];
-        state.currentPos++; // Skip the left bracket
+        // Mark that we found an arrow token
+        arrowFound = true;
         
-        // We expect exactly one element (the type) followed by a right bracket
-        if (state.currentPos >= state.tokens.length) {
-          throw new ParseError(
-            "Unclosed array type notation", 
-            arrayTypeStartToken.position, 
-            state.input
-          );
+        // Add the arrow symbol
+        elements.push(parseExpression(state));
+        
+        // Check if the next token is a left bracket (array type)
+        if (state.currentPos < state.tokens.length && 
+            state.tokens[state.currentPos].type === TokenType.LeftBracket) {
+          
+          // This is an array type notation - preserve it directly
+          const arrayTypeStartToken = state.tokens[state.currentPos];
+          state.currentPos++; // Skip the left bracket
+          
+          // We expect exactly one element (the type) followed by a right bracket
+          if (state.currentPos >= state.tokens.length) {
+            if (state.tolerant) {
+              // In tolerant mode, add a placeholder for the incomplete array type
+              elements.push(createList(createSymbol("incomplete-array-type")));
+            } else {
+              throw new ParseError(
+                "Unclosed array type notation", 
+                arrayTypeStartToken.position, 
+                state.input
+              );
+            }
+          } else {
+            // Parse the inner type
+            const innerType = parseExpression(state);
+            
+            // Expect a closing bracket
+            if (state.currentPos >= state.tokens.length || 
+                state.tokens[state.currentPos].type !== TokenType.RightBracket) {
+              if (state.tolerant) {
+                // In tolerant mode, add what we have so far
+                elements.push(createList(innerType));
+              } else {
+                throw new ParseError(
+                  "Missing closing bracket in array type notation", 
+                  arrayTypeStartToken.position, 
+                  state.input
+                );
+              }
+            } else {
+              // Skip the right bracket
+              state.currentPos++;
+              
+              // Add the array type as a list with one element (the inner type)
+              elements.push(createList(innerType));
+            }
+          }
+        } else {
+          // Regular type, just parse it normally
+          elements.push(parseExpression(state));
         }
-        
-        // Parse the inner type
-        const innerType = parseExpression(state);
-        
-        // Expect a closing bracket
-        if (state.currentPos >= state.tokens.length || 
-            state.tokens[state.currentPos].type !== TokenType.RightBracket) {
-          throw new ParseError(
-            "Missing closing bracket in array type notation", 
-            arrayTypeStartToken.position, 
-            state.input
-          );
-        }
-        
-        // Skip the right bracket
-        state.currentPos++;
-        
-        // Add the array type as a list with one element (the inner type)
-        elements.push(createList(innerType));
-      } else {
-        // Regular type, just parse it normally
+      }
+      // Normal element parsing
+      else {
         elements.push(parseExpression(state));
       }
-    }
-    // Normal element parsing
-    else {
-      elements.push(parseExpression(state));
+    } catch (e) {
+      if (state.tolerant && e instanceof ParseError) {
+        // In tolerant mode, add a placeholder and try to continue
+        elements.push(createSymbol("incomplete-expression"));
+        state.currentPos++;
+      } else {
+        // In strict mode, propagate the error
+        throw e;
+      }
     }
   }
   
-  if (state.currentPos >= state.tokens.length)
-    throw new ParseError("Unclosed list", listStartPos, state.input);
+  if (state.currentPos >= state.tokens.length) {
+    if (state.tolerant) {
+      // In tolerant mode, return a partial list for unclosed expressions
+      return createList(...elements);
+    } else {
+      throw new ParseError("Unclosed list", listStartPos, state.input);
+    }
+  }
   
   state.currentPos++;
   
@@ -426,12 +504,31 @@ function parseVector(state: ParserState): SList {
     state.currentPos < state.tokens.length &&
     state.tokens[state.currentPos].type !== TokenType.RightBracket
   ) {
-    elements.push(parseExpression(state));
-    if (state.currentPos < state.tokens.length && state.tokens[state.currentPos].type === TokenType.Comma)
-      state.currentPos++;
+    try {
+      elements.push(parseExpression(state));
+      if (state.currentPos < state.tokens.length && state.tokens[state.currentPos].type === TokenType.Comma)
+        state.currentPos++;
+    } catch (e) {
+      if (state.tolerant && e instanceof ParseError) {
+        // In tolerant mode, add a placeholder and try to continue
+        elements.push(createSymbol("incomplete-expression"));
+        state.currentPos++;
+      } else {
+        // In strict mode, propagate the error
+        throw e;
+      }
+    }
   }
-  if (state.currentPos >= state.tokens.length)
-    throw new ParseError("Unclosed vector", startPos, state.input);
+  if (state.currentPos >= state.tokens.length) {
+    if (state.tolerant) {
+      // In tolerant mode, return a partial vector for unclosed expressions
+      return elements.length === 0
+        ? createList(createSymbol("empty-array"))
+        : createList(createSymbol("vector"), ...elements);
+    } else {
+      throw new ParseError("Unclosed vector", startPos, state.input);
+    }
+  }
   state.currentPos++;
   return elements.length === 0
     ? createList(createSymbol("empty-array"))
@@ -448,28 +545,62 @@ function parseMap(state: ParserState): SList {
     state.currentPos < state.tokens.length &&
     state.tokens[state.currentPos].type !== TokenType.RightBrace
   ) {
-    const key = parseExpression(state);
-    if (
-      state.currentPos >= state.tokens.length ||
-      (state.tokens[state.currentPos].type !== TokenType.Colon && 
-       key.type !== "string" && // Support for JSON style object literals
-       !(key.type === "literal" && typeof (key as any).value === "string"))
-    ) {
-      const errorPos = state.currentPos < state.tokens.length
-        ? state.tokens[state.currentPos].position
-        : startPos;
-      throw new ParseError("Expected ':' in map literal", errorPos, state.input);
+    try {
+      const key = parseExpression(state);
+      if (
+        state.currentPos >= state.tokens.length ||
+        (state.tokens[state.currentPos].type !== TokenType.Colon && 
+         key.type !== "string" && // Support for JSON style object literals
+         !(key.type === "literal" && typeof (key as any).value === "string"))
+      ) {
+        if (state.tolerant) {
+          // In tolerant mode, add what we have and use a placeholder
+          entries.push(key, createSymbol("incomplete-value"));
+          if (state.currentPos < state.tokens.length) {
+            state.currentPos++; // Skip problematic token
+          }
+        } else {
+          const errorPos = state.currentPos < state.tokens.length
+            ? state.tokens[state.currentPos].position
+            : startPos;
+          throw new ParseError("Expected ':' in map literal", errorPos, state.input);
+        }
+      } else {
+        if (state.tokens[state.currentPos].type === TokenType.Colon) {
+          state.currentPos++; // Skip colon
+        }
+        const value = parseExpression(state);
+        entries.push(key, value);
+        if (state.currentPos < state.tokens.length && state.tokens[state.currentPos].type === TokenType.Comma)
+          state.currentPos++;
+      }
+    } catch (e) {
+      if (state.tolerant && e instanceof ParseError) {
+        // In tolerant mode, add a placeholder and try to continue
+        if (entries.length % 2 === 0) {
+          // Need a key
+          entries.push(createSymbol("incomplete-key"), createSymbol("incomplete-value"));
+        } else {
+          // Need a value for the last key
+          entries.push(createSymbol("incomplete-value"));
+        }
+        state.currentPos++;
+      } else {
+        // In strict mode, propagate the error
+        throw e;
+      }
     }
-    if (state.tokens[state.currentPos].type === TokenType.Colon) {
-      state.currentPos++; // Skip colon
-    }
-    const value = parseExpression(state);
-    entries.push(key, value);
-    if (state.currentPos < state.tokens.length && state.tokens[state.currentPos].type === TokenType.Comma)
-      state.currentPos++;
   }
-  if (state.currentPos >= state.tokens.length)
-    throw new ParseError("Unclosed map", startPos, state.input);
+  if (state.currentPos >= state.tokens.length) {
+    if (state.tolerant) {
+      // In tolerant mode, return a partial map for unclosed expressions
+      return entries.length === 0
+        ? createList(createSymbol("empty-map"))
+        : createList(createSymbol("hash-map"), ...entries);
+    } else {
+      throw new ParseError("Unclosed map", startPos, state.input);
+    }
+  }
   state.currentPos++;
   return entries.length === 0
     ? createList(createSymbol("empty-map"))
@@ -486,12 +617,31 @@ function parseSet(state: ParserState): SList {
     state.currentPos < state.tokens.length &&
     state.tokens[state.currentPos].type !== TokenType.RightBracket
   ) {
-    elements.push(parseExpression(state));
-    if (state.currentPos < state.tokens.length && state.tokens[state.currentPos].type === TokenType.Comma)
-      state.currentPos++;
+    try {
+      elements.push(parseExpression(state));
+      if (state.currentPos < state.tokens.length && state.tokens[state.currentPos].type === TokenType.Comma)
+        state.currentPos++;
+    } catch (e) {
+      if (state.tolerant && e instanceof ParseError) {
+        // In tolerant mode, add a placeholder and try to continue
+        elements.push(createSymbol("incomplete-expression"));
+        state.currentPos++;
+      } else {
+        // In strict mode, propagate the error
+        throw e;
+      }
+    }
   }
-  if (state.currentPos >= state.tokens.length)
-    throw new ParseError("Unclosed set", startPos, state.input);
+  if (state.currentPos >= state.tokens.length) {
+    if (state.tolerant) {
+      // In tolerant mode, return a partial set for unclosed expressions
+      return elements.length === 0
+        ? createList(createSymbol("empty-set"))
+        : createList(createSymbol("hash-set"), ...elements);
+    } else {
+      throw new ParseError("Unclosed set", startPos, state.input);
+    }
+  }
   state.currentPos++;
   return elements.length === 0
     ? createList(createSymbol("empty-set"))
@@ -499,4 +649,12 @@ function parseSet(state: ParserState): SList {
 }
 
 // Export all the S-expression types for other modules to use
-export { SExp, SList, SSymbol, SString, SNumber, SBoolean, SNil };
+export {
+  SExp,
+  SList,
+  SSymbol,
+  SString,
+  SNumber,
+  SBoolean,
+  SNil,
+} from "./s-exp/types";

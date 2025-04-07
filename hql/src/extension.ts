@@ -161,7 +161,24 @@ export function activate(context: vscode.ExtensionContext) {
   
   context.subscriptions.push(vscode.commands.registerCommand(
     "hql.cancelEvaluations", 
-    () => evaluator.cancelAllEvaluations()
+    () => {
+      // Check if the suggestion widget is visible before canceling evaluations
+      if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'hql') {
+        // Only cancel evaluations if the suggestion widget is not visible
+        // This prevents the "HQL: All evaluations cancelled" message during autocompletion
+        const widgetVisible = vscode.commands.executeCommand('inlineSuggestion.hasVisibleSuggestions') || 
+                              vscode.commands.executeCommand('editor.action.hasEditorWidgetFocus');
+        
+        if (!widgetVisible) {
+          evaluator.cancelAllEvaluations();
+        } else {
+          // Let the Escape key be handled by the editor to dismiss autocomplete
+          vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
+        }
+      } else {
+        evaluator.cancelAllEvaluations();
+      }
+    }
   ));
 
   // Register REPL server commands
