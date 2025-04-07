@@ -1,4 +1,8 @@
-# Welcome to your VS Code Extension
+# Welcome to HQL LSP: 
+
+## How to test it? 
+1. npm run debug
+2. write hql code in new VS code instance running the HQL LSP
 
 ## What's in the folder
 

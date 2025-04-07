@@ -1,318 +1,50 @@
 {
-  "Function Definition (fn)": {
-    "prefix": "fn",
-    "body": [
-      "(fn ${1:name} (${2:params})",
-      "  ${3:body})"
-    ],
-    "description": "Define a function"
-  },
-  "Pure Function Definition (fx)": {
-    "prefix": "fx",
-    "body": [
-      "(fx ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})",
-      "  ${7:body})"
-    ],
-    "description": "Define a pure function with type annotations"
-  },
-  "Lambda Function": {
-    "prefix": "lambda",
-    "body": [
-      "(lambda (${1:params}) ${2:body})"
-    ],
-    "description": "Anonymous function"
-  },
-  "Variable Definition (let)": {
-    "prefix": "let",
-    "body": [
-      "(let ${1:name} ${2:value})"
-    ],
-    "description": "Define a constant variable"
-  },
-  "Multiple Variable Definition": {
-    "prefix": "let-multi",
-    "body": [
-      "(let (${1:name1} ${2:value1}",
-      "      ${3:name2} ${4:value2})",
-      "  ${5:body})"
-    ],
-    "description": "Define multiple variables with a body"
-  },
-  "Mutable Variable Definition (var)": {
-    "prefix": "var",
-    "body": [
-      "(var ${1:name} ${2:value})"
-    ],
-    "description": "Define a mutable variable"
-  },
-  "If Expression": {
-    "prefix": "if",
-    "body": [
-      "(if ${1:condition}",
-      "  ${2:then-branch}",
-      "  ${3:else-branch})"
-    ],
-    "description": "Conditional if expression"
-  },
-  "Conditional Expression (cond)": {
-    "prefix": "cond",
-    "body": [
-      "(cond",
-      "  (${1:condition1}) ${2:result1}",
-      "  (${3:condition2}) ${4:result2}",
-      "  (else ${5:default-result}))"
-    ],
-    "description": "Multi-way conditional expression"
-  },
-  "When Expression": {
-    "prefix": "when",
-    "body": [
-      "(when ${1:condition}",
-      "  ${2:body})"
-    ],
-    "description": "Conditional execution when true"
-  },
-  "Unless Expression": {
-    "prefix": "unless",
-    "body": [
-      "(unless ${1:condition}",
-      "  ${2:body})"
-    ],
-    "description": "Conditional execution when false"
-  },
-  "Loop Expression": {
-    "prefix": "loop",
-    "body": [
-      "(loop (${1:var1} ${2:init1} ${3:var2} ${4:init2})",
-      "  (if ${5:exit-condition}",
-      "    ${6:result}",
-      "    (recur ${7:next1} ${8:next2})))"
-    ],
-    "description": "Loop with recursive binding"
-  },
-  "For Loop": {
-    "prefix": "for",
-    "body": [
-      "(for (${1:i} from: ${2:0} to: ${3:10} by: ${4:1})",
-      "  ${5:body})"
-    ],
-    "description": "For loop with named parameters"
-  },
-  "While Loop": {
-    "prefix": "while",
-    "body": [
-      "(while ${1:condition}",
-      "  ${2:body})"
-    ],
-    "description": "While loop"
-  },
-  "Import Module": {
-    "prefix": "import",
-    "body": [
-      "(import [${1:symbol1}, ${2:symbol2}] from \"${3:path}\")"
-    ],
-    "description": "Import symbols from a module"
-  },
-  "Import Module with Alias": {
-    "prefix": "import-as",
-    "body": [
-      "(import [${1:symbol} as ${2:alias}] from \"${3:path}\")"
-    ],
-    "description": "Import symbol with alias"
-  },
-  "Import Namespace": {
+  // This file provides static snippets that complement the language server completions.
+  // We're keeping this minimal to avoid duplication with the dynamic completions.
+  "HQL Import with namespace": {
     "prefix": "import-ns",
     "body": [
-      "(import ${1:module} from \"${2:path}\")"
+      "(import ${1:namespace} from \"${2:module}\")"
     ],
-    "description": "Import module namespace"
+    "description": "Import a module as a namespace"
   },
-  "Export Symbols": {
-    "prefix": "export",
+  "HQL Import specific symbols": {
+    "prefix": "import-sym",
+    "body": [
+      "(import [${1:symbol1}, ${2:symbol2}] from \"${3:module}\")"
+    ],
+    "description": "Import specific symbols from a module"
+  },
+  "HQL Export symbols": {
+    "prefix": "export-sym",
     "body": [
       "(export [${1:symbol1}, ${2:symbol2}])"
     ],
-    "description": "Export symbols from current module"
+    "description": "Export symbols from the current module"
   },
-  "Export Single Symbol": {
-    "prefix": "export-one",
+  "HQL HTTP Request": {
+    "prefix": "http-req",
     "body": [
-      "(export \"${1:name}\" ${2:value})"
+      "(http:request",
+      "  method: \"${1|GET,POST,PUT,DELETE,PATCH|}\"",
+      "  url: \"${2:https://example.com}\"",
+      "  headers: {",
+      "    \"Content-Type\": \"application/json\"",
+      "    ${3:}",
+      "  }",
+      "  ${4:body: {}}",
+      ")"
     ],
-    "description": "Export a single symbol with name"
+    "description": "Create an HTTP request"
   },
-  "Do Block": {
-    "prefix": "do",
+  "HQL Try/Catch": {
+    "prefix": "try-catch",
     "body": [
-      "(do",
-      "  ${1:expression1}",
-      "  ${2:expression2}",
-      "  ${3:expression3})"
+      "(try",
+      "  ${1:body}",
+      "  (catch ${2:error}",
+      "    ${3:handler}))"
     ],
-    "description": "Sequential execution block"
-  },
-  "Repeat Loop": {
-    "prefix": "repeat",
-    "body": [
-      "(repeat ${1:count}",
-      "  ${2:body})"
-    ],
-    "description": "Repeat a body a specific number of times"
-  },
-  "Vector Literal": {
-    "prefix": "vector",
-    "body": [
-      "[${1:item1}, ${2:item2}, ${3:item3}]"
-    ],
-    "description": "Vector/array literal"
-  },
-  "Object/Map Literal": {
-    "prefix": "object",
-    "body": [
-      "{\"${1:key1}\": ${2:value1}, \"${3:key2}\": ${4:value2}}"
-    ],
-    "description": "Object/map literal"
-  },
-  "Set Literal": {
-    "prefix": "set",
-    "body": [
-      "#[${1:item1}, ${2:item2}, ${3:item3}]"
-    ],
-    "description": "Set literal"
-  },
-  "Class Definition": {
-    "prefix": "class",
-    "body": [
-      "(class ${1:ClassName}",
-      "  ;; Class fields",
-      "  (var ${2:field1})",
-      "  (let ${3:constField} ${4:value})",
-      "",
-      "  ;; Constructor",
-      "  (constructor (${5:params})",
-      "    ${6:constructorBody})",
-      "",
-      "  ;; Methods",
-      "  (fn ${7:methodName} (${8:params})",
-      "    ${9:methodBody}))"
-    ],
-    "description": "Define a class with fields, constructor, and methods"
-  },
-  "Enum Definition": {
-    "prefix": "enum",
-    "body": [
-      "(enum ${1:EnumName}",
-      "  (case ${2:case1})",
-      "  (case ${3:case2})",
-      "  (case ${4:case3}))"
-    ],
-    "description": "Define an enumeration type"
-  },
-  "Enum with Value Definition": {
-    "prefix": "enum-values",
-    "body": [
-      "(enum ${1:EnumName} : ${2:Type}",
-      "  (case ${3:case1} ${4:value1})",
-      "  (case ${5:case2} ${6:value2})",
-      "  (case ${7:case3} ${8:value3}))"
-    ],
-    "description": "Define an enumeration type with values"
-  },
-  "Enum with Associated Values": {
-    "prefix": "enum-associated",
-    "body": [
-      "(enum ${1:EnumName}",
-      "  (case ${2:case1} ${3:param1}: ${4:Type1} ${5:param2}: ${6:Type2})",
-      "  (case ${7:case2} ${8:param3}: ${9:Type3}))"
-    ],
-    "description": "Define an enumeration with associated values"
-  },
-  "Function with Default Parameters": {
-    "prefix": "fn-defaults",
-    "body": [
-      "(fn ${1:name} (${2:param1} = ${3:default1} ${4:param2} = ${5:default2})",
-      "  ${6:body})"
-    ],
-    "description": "Function with default parameter values"
-  },
-  "Pure Function with Default Parameters": {
-    "prefix": "fx-defaults",
-    "body": [
-      "(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:default1} ${5:param2}: ${6:Type2} = ${7:default2}) (-> ${8:ReturnType})",
-      "  ${9:body})"
-    ],
-    "description": "Pure function with typed parameters and default values"
-  },
-  "Define Macro": {
-    "prefix": "defmacro",
-    "body": [
-      "(defmacro ${1:name} (${2:params})",
-      "  `(${3:body}))"
-    ],
-    "description": "Define a macro with quasiquote syntax"
-  },
-  "Rest Parameters": {
-    "prefix": "rest-params",
-    "body": [
-      "(fn ${1:name} (${2:param} & ${3:rest})",
-      "  ${4:body})"
-    ],
-    "description": "Function with rest parameters"
-  },
-  "Method Chain Call": {
-    "prefix": "method-chain",
-    "body": [
-      "(${1:object}",
-      "  .${2:method1} ${3:args1}",
-      "  .${4:method2} ${5:args2}",
-      "  .${6:method3} ${7:args3})"
-    ],
-    "description": "Method chain call with dot notation"
-  },
-  "Return Statement": {
-    "prefix": "return",
-    "body": [
-      "(return ${1:expression})"
-    ],
-    "description": "Return a value from a function"
-  },
-  "Console Log": {
-    "prefix": "log",
-    "body": [
-      "(console.log ${1:message})"
-    ],
-    "description": "Log a message to the console"
-  },
-  "Print Statement": {
-    "prefix": "print",
-    "body": [
-      "(print ${1:message})"
-    ],
-    "description": "Print a message"
-  },
-  "If-Let Expression": {
-    "prefix": "if-let",
-    "body": [
-      "(if-let (${1:name} ${2:value})",
-      "  ${3:then-branch}",
-      "  ${4:else-branch})"
-    ],
-    "description": "Conditional evaluation with binding"
-  },
-  "Comment Block": {
-    "prefix": "comment-block",
-    "body": [
-      "/*",
-      " * ${1:comment}",
-      " */"
-    ],
-    "description": "Multi-line comment block"
-  },
-  "Line Comment": {
-    "prefix": "comment",
-    "body": [
-      ";; ${1:comment}"
-    ],
-    "description": "Single line comment"
+    "description": "Try/catch error handling"
   }
 }
