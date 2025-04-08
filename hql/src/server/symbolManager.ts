@@ -27,6 +27,10 @@ import {
       returnType?: string;
       enumName?: string;
       sourceModule?: string;
+      originalName?: string;
+      exported?: boolean;
+      imported?: boolean;
+      isNamespaceImport?: boolean;
       // Add more data fields as needed
     };
   }
@@ -199,6 +203,14 @@ import {
         case 'defmacro':
         case 'macro':
           this.processMacroDefinition(document, expr as SList, symbols, range, documentation);
+          break;
+        
+        case 'export':
+          this.processExportStatement(document, expr as SList, symbols, range, documentation);
+          break;
+        
+        case 'import':
+          this.processImportStatement(document, expr as SList, symbols, range, documentation);
           break;
       }
     }
@@ -929,5 +941,225 @@ import {
           sourceModule: document.uri
         }
       });
+    }
+    
+    /**
+     * Extract export statements from the document
+     */
+    private processExportStatement(
+      document: TextDocument,
+      expr: SList,
+      symbols: ExtendedSymbolInformation[],
+      range: Range,
+      documentation: string
+    ): void {
+      if (expr.elements.length < 2) return;
+      
+      // First element is the 'export' symbol
+      const secondElement = expr.elements[1];
+      
+      // Handle vector export syntax: (export [sym1, sym2, ...])
+      if (isList(secondElement)) {
+        this.processVectorExport(document, secondElement as SList, symbols, range, documentation);
+      }
+      // Handle legacy string-based export: (export "name" symbol)
+      else if (expr.elements.length > 2 && isString(secondElement) && isSymbol(expr.elements[2])) {
+        const exportName = secondElement.value;
+        const symbolName = isSymbol(expr.elements[2]) ? expr.elements[2].name : "unknown";
+        
+        const location = Location.create(document.uri, range);
+        symbols.push({
+          name: exportName,
+          kind: SymbolKind.Variable,
+          location,
+          data: {
+            documentation,
+            sourceModule: document.uri
+          }
+        });
+      }
+    }
+    
+    /**
+     * Process vector-based export syntax
+     */
+    private processVectorExport(
+      document: TextDocument,
+      exportList: SList,
+      symbols: ExtendedSymbolInformation[],
+      range: Range,
+      documentation: string
+    ): void {
+      for (const element of exportList.elements) {
+        if (isSymbol(element)) {
+          // Simple export: (export [symbolName])
+          const symbolName = element.name;
+          const location = Location.create(document.uri, range);
+          
+          // Find the actual symbol definition to get its kind
+          const existingSymbol = symbols.find(s => s.name === symbolName);
+          const kind = existingSymbol?.kind || SymbolKind.Variable;
+          
+          symbols.push({
+            name: symbolName,
+            kind,
+            location,
+            data: {
+              documentation,
+              sourceModule: document.uri,
+              exported: true
+            }
+          });
+        } else if (isList(element)) {
+          // Handle 'as' syntax: (export [original as alias])
+          const asList = element as SList;
+          if (asList.elements.length > 2 && 
+              isSymbol(asList.elements[0]) && 
+              isSymbol(asList.elements[1]) && 
+              asList.elements[1].name === 'as' && 
+              isSymbol(asList.elements[2])) {
+            
+            const originalName = asList.elements[0].name;
+            const aliasName = asList.elements[2].name;
+            
+            const location = Location.create(document.uri, range);
+            
+            // Find the actual symbol definition to get its kind
+            const existingSymbol = symbols.find(s => s.name === originalName);
+            const kind = existingSymbol?.kind || SymbolKind.Variable;
+            
+            symbols.push({
+              name: aliasName, 
+              kind,
+              location,
+              data: {
+                documentation,
+                sourceModule: document.uri,
+                exported: true,
+                originalName
+              }
+            });
+            
+            // Also mark the original as exported
+            const originalSymbol = symbols.find(s => s.name === originalName);
+            if (originalSymbol && originalSymbol.data) {
+              originalSymbol.data.exported = true;
+            }
+          }
+        }
+      }
+    }
+    
+    /**
+     * Process import statements
+     */
+    private processImportStatement(
+      document: TextDocument,
+      expr: SList,
+      symbols: ExtendedSymbolInformation[],
+      range: Range,
+      documentation: string
+    ): void {
+      if (expr.elements.length < 4) return;
+      
+      // Expected format: (import [sym1, sym2] from "path") or (import namespace from "path")
+      if (!isSymbol(expr.elements[0]) || expr.elements[0].name !== 'import') return;
+      
+      // Get the second element (either namespace or symbol list)
+      const secondElement = expr.elements[1];
+      
+      // Find 'from' keyword position
+      let fromIndex = -1;
+      for (let i = 2; i < expr.elements.length; i++) {
+        if (isSymbol(expr.elements[i]) && (expr.elements[i] as SSymbol).name === 'from') {
+          fromIndex = i;
+          break;
+        }
+      }
+      
+      if (fromIndex === -1 || fromIndex + 1 >= expr.elements.length) return;
+      
+      // Get the module path
+      const pathElement = expr.elements[fromIndex + 1];
+      if (!isString(pathElement)) return;
+      
+      const modulePath = pathElement.value;
+      const documentUri = document.uri;
+      const location = Location.create(documentUri, range);
+      
+      // Namespace import: (import namespace from "path")
+      if (isSymbol(secondElement)) {
+        const namespaceName = secondElement.name;
+        
+        // Record the namespace import
+        symbols.push({
+          name: namespaceName,
+          kind: SymbolKind.Namespace,
+          location,
+          data: {
+            documentation,
+            sourceModule: modulePath,
+            isNamespaceImport: true
+          }
+        });
+        
+        // Resolve and extract symbols from the imported module
+        this.extractModuleSymbols(modulePath, documentUri, namespaceName);
+      }
+      // Vector import: (import [sym1, sym2] from "path")
+      else if (isList(secondElement)) {
+        const importList = secondElement as SList;
+        
+        // Process each symbol in the import list
+        for (const element of importList.elements) {
+          if (isSymbol(element)) {
+            // Simple import: (import [symbol] from "path")
+            const symbolName = element.name;
+            
+            // Record the imported symbol
+            symbols.push({
+              name: symbolName,
+              kind: SymbolKind.Variable, // Will be updated when resolved
+              location,
+              data: {
+                documentation,
+                sourceModule: modulePath,
+                imported: true
+              }
+            });
+            
+            // Add the import relationship to resolve later
+            this.addImportedSymbol(documentUri, symbolName, modulePath);
+          } else if (isList(element)) {
+            // Handle 'as' syntax: (import [original as alias] from "path")
+            const asList = element as SList;
+            if (asList.elements.length > 2 && 
+                isSymbol(asList.elements[0]) && 
+                isSymbol(asList.elements[1]) && 
+                asList.elements[1].name === 'as' && 
+                isSymbol(asList.elements[2])) {
+              
+              const originalName = asList.elements[0].name;
+              const aliasName = asList.elements[2].name;
+              
+              // Record the imported symbol with alias
+              symbols.push({
+                name: aliasName,
+                kind: SymbolKind.Variable, // Will be updated when resolved
+                location,
+                data: {
+                  documentation,
+                  sourceModule: modulePath,
+                  imported: true,
+                  originalName
+                }
+              });
+              
+              // Add the import relationship with alias
+              this.addImportedSymbol(documentUri, originalName, modulePath, aliasName);
+            }
+          }
+        }
+      }
     }
   }

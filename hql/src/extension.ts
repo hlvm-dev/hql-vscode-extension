@@ -46,6 +46,17 @@ export function activate(context: vscode.ExtensionContext) {
   logger.info('Activating HQL extension');
   outputChannel.appendLine('HQL extension activated');
   
+  // Notify user about snippet documentation
+  const snippetsDocPath = context.asAbsolutePath(path.join("doc", "hql_snippets.md"));
+  const message = 'HQL extension activated. For better snippets experience, check the snippets documentation.';
+  ui.showInfo(message);
+  
+  // Fix snippet tab navigation by updating editor settings
+  const editorConfig = vscode.workspace.getConfiguration('editor');
+  if (editorConfig.get('tabCompletion') !== 'on') {
+    vscode.window.showInformationMessage('For better HQL snippets experience, enable Tab completion in VS Code settings');
+  }
+  
   // Update the UI
   statusBarItem.show();
   updateServerStatus();

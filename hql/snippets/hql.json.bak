@@ -1,0 +1,182 @@
+{
+  "HQL Function - Simple": {
+    "prefix": "fn-simple",
+    "body": [
+      "(fn ${1:name} (${2:param1} ${3:param2})",
+      "  ${0:body})"
+    ],
+    "description": "Create a simple untyped function",
+    "sortText": "01"
+  },
+  "HQL Function - No parameters": {
+    "prefix": "fn-noparam",
+    "body": [
+      "(fn ${1:name} ()",
+      "  ${0:body})"
+    ],
+    "description": "Create a function with no parameters",
+    "sortText": "02"
+  },
+  "HQL Function - Single parameter": {
+    "prefix": "fn-single",
+    "body": [
+      "(fn ${1:name} (${2:param})",
+      "  ${0:body})"
+    ],
+    "description": "Create a function with a single parameter",
+    "sortText": "03"
+  },
+  "HQL Function - Default values": {
+    "prefix": "fn-defaults",
+    "body": [
+      "(fn ${1:name} (${2:param1} = ${3:defaultValue1} ${4:param2} = ${5:defaultValue2})",
+      "  ${0:body})"
+    ],
+    "description": "Create an untyped function with default values",
+    "sortText": "04"
+  },
+  "HQL Function - Single expression": {
+    "prefix": "fn-expr",
+    "body": [
+      "(fn ${1:name} (${2:param}) ${3:expression})"
+    ],
+    "description": "Create a single-expression function",
+    "sortText": "05"
+  },
+  "HQL Function - Unnamed": {
+    "prefix": "fn-unnamed",
+    "body": [
+      "(fn (${1:param1} ${2:param2}) ${0:body})"
+    ],
+    "description": "Create an unnamed (anonymous) function",
+    "sortText": "06"
+  },
+  "HQL Function - Single typed parameter": {
+    "prefix": "fn-single-typed",
+    "body": [
+      "(fn ${1:name} (${2:param}: ${3:Type}) (-> ${4:ReturnType})",
+      "  ${0:body})"
+    ],
+    "description": "Create a function with a single typed parameter",
+    "sortText": "07"
+  },
+  "HQL Function - Fully typed": {
+    "prefix": "fn-typed",
+    "body": [
+      "(fn ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})",
+      "  ${0:body})"
+    ],
+    "description": "Create a fully typed function",
+    "sortText": "08"
+  },
+  "HQL Function - Fully typed with defaults": {
+    "prefix": "fn-typed-defaults",
+    "body": [
+      "(fn ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2} = ${7:defaultValue2}) (-> ${8:ReturnType})",
+      "  ${0:body})"
+    ],
+    "description": "Create a fully typed function with default values",
+    "sortText": "09"
+  },
+  "HQL Function - Unnamed typed": {
+    "prefix": "fn-unnamed-typed",
+    "body": [
+      "(fn (${1:param1}: ${2:Type1} ${3:param2}: ${4:Type2}) (-> ${5:ReturnType}) ${0:body})"
+    ],
+    "description": "Create an unnamed (anonymous) typed function",
+    "sortText": "10"
+  },
+  "HQL Function - Pure": {
+    "prefix": "fx",
+    "body": [
+      "(fx ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})",
+      "  ${0:body})"
+    ],
+    "description": "Create a pure function (fx) with type safety",
+    "sortText": "11"
+  },
+  "HQL Function - Pure with defaults": {
+    "prefix": "fx-defaults",
+    "body": [
+      "(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2} = ${7:defaultValue2}) (-> ${8:ReturnType})",
+      "  ${0:body})"
+    ],
+    "description": "Create a pure function (fx) with default values",
+    "sortText": "12"
+  },
+  "HQL Function Call - Positional": {
+    "prefix": "call-pos",
+    "body": [
+      "(${1:functionName} ${2:arg1} ${3:arg2})"
+    ],
+    "description": "Call a function with positional arguments",
+    "sortText": "13"
+  },
+  "HQL Function Call - Named": {
+    "prefix": "call-named",
+    "body": [
+      "(${1:functionName} ${2:param1}: ${3:arg1} ${4:param2}: ${5:arg2})"
+    ],
+    "description": "Call a function with named arguments",
+    "sortText": "14"
+  },
+  "HQL Function Call - Mixed": {
+    "prefix": "call-mixed",
+    "body": [
+      "(${1:functionName} ${2:param1}: ${3:arg1})"
+    ],
+    "description": "Call a function with some named arguments (defaults for the rest)",
+    "sortText": "15"
+  },
+  "HQL Import - Namespace": {
+    "prefix": "import-ns",
+    "body": [
+      "(import ${1:namespace} from \"${2:module}\")"
+    ],
+    "description": "Import a module as a namespace",
+    "sortText": "16"
+  },
+  "HQL Import - Specific symbols": {
+    "prefix": "import-sym",
+    "body": [
+      "(import [${1:symbol1}, ${2:symbol2}] from \"${3:module}\")"
+    ],
+    "description": "Import specific symbols from a module",
+    "sortText": "17"
+  },
+  "HQL Export - Symbols": {
+    "prefix": "export-sym",
+    "body": [
+      "(export [${1:symbol1}, ${2:symbol2}])"
+    ],
+    "description": "Export symbols from the current module",
+    "sortText": "18"
+  },
+  "HQL HTTP Request": {
+    "prefix": "http-req",
+    "body": [
+      "(http:request",
+      "  method: \"${1|GET,POST,PUT,DELETE,PATCH|}\"",
+      "  url: \"${2:https://example.com}\"",
+      "  headers: {",
+      "    \"Content-Type\": \"application/json\"",
+      "    ${3:}",
+      "  }",
+      "  ${4:body: {}}",
+      ")"
+    ],
+    "description": "Create an HTTP request",
+    "sortText": "19"
+  },
+  "HQL Try/Catch": {
+    "prefix": "try-catch",
+    "body": [
+      "(try",
+      "  ${1:body}",
+      "  (catch ${2:error}",
+      "    ${3:handler}))"
+    ],
+    "description": "Try/catch error handling",
+    "sortText": "20"
+  }
+}

@@ -47,103 +47,91 @@ export class CompletionProvider {
    */
   async provideCompletionItems(params: CompletionParams): Promise<CompletionItem[]> {
     try {
-      const { textDocument, position } = params;
-      const document = await this.symbolManager.getDocument(textDocument.uri);
+      const document = this.symbolManager.getDocument(params.textDocument.uri);
       if (!document) {
         return [];
       }
       
-      // Get text around cursor position for context
-      const text = document.getText();
-      const lines = text.split('\n');
-      const currentLine = lines[position.line] || '';
-      const linePrefix = currentLine.substring(0, position.character);
-      
-      // Update dynamic value cache periodically
       this.updateDynamicValues(document);
       
-      // Check for different completion contexts
+      const position = params.position;
+      const linePrefix = document.getText({
+        start: { line: position.line, character: 0 },
+        end: position
+      });
       
-      // Handle import completions first
-      if (linePrefix.includes('import')) {
-        return this.handleImportCompletions(document, currentLine, text);
+      const fullText = document.getText();
+      
+      // Get the current line
+      const currentLine = document.getText({
+        start: { line: position.line, character: 0 },
+        end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
+      });
+
+      // Check for function call context first: (functionName |
+      const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s*$/);
+      if (funcCallMatch) {
+        const functionName = funcCallMatch[1];
+        const paramCompletions = this.getParameterCompletions(document, functionName);
+        if (paramCompletions.length > 0) {
+          return paramCompletions;
+        }
       }
       
-      // Handle method chain completions or enum dot notation completions (e.g., object.method or .enumCase)
-      if (linePrefix.endsWith('.')) {
-        // Check if this is enum dot notation for parameter typing
-        const enumDotCompletions = this.handleEnumDotCompletions(document, position);
-        if (enumDotCompletions) {
-          return enumDotCompletions;
+      // Check for import completions
+      if (currentLine.includes('import') && (
+          linePrefix.includes('import') || 
+          linePrefix.includes('from') || 
+          linePrefix.includes('['))) {
+        return this.handleImportCompletions(document, linePrefix, fullText);
+      }
+      
+      // Check for export completions
+      if (currentLine.includes('export') && (
+          linePrefix.includes('export') || 
+          linePrefix.includes('['))) {
+        return this.handleExportCompletions(document, linePrefix, fullText);
+      }
+      
+      // Check for enum value completions
+      if (linePrefix.includes('.')) {
+        const dotCompletions = this.handleEnumDotCompletions(document, position);
+        if (dotCompletions.length > 0) {
+          return dotCompletions;
         }
         
-        // Otherwise handle as method chain
-        return this.handleMethodChainCompletions(document, currentLine);
-      }
-      
-      // Handle parameter completions for function calls
-      const paramMatch = linePrefix.match(/\(\s*(\w+)\s+([^(\s)]+)?$/);
-      if (paramMatch) {
-        const funcName = paramMatch[1];
-        return this.getParameterCompletions(document, funcName);
-      }
-      
-      // Handle enum value completions
-      const enumValueMatch = linePrefix.match(/:\s*(\w+)$/);
-      if (enumValueMatch) {
-        const enumType = enumValueMatch[1];
-        return this.getEnumValueCompletions(document, enumType);
-      }
-      
-      // Check if we're inside a form that has special completion requirements
-      const enclosingFunction = this.findEnclosingFunction(document, position);
-      if (enclosingFunction) {
-        const functionSpecificCompletions = this.getFunctionSpecificCompletions(enclosingFunction.name);
-        if (functionSpecificCompletions.length > 0) {
-          return functionSpecificCompletions;
+        // Check for method chain completions
+        const methodChainCompletions = this.handleMethodChainCompletions(document, linePrefix);
+        if (methodChainCompletions.length > 0) {
+          return methodChainCompletions;
         }
       }
-      
-      // Get word at cursor
+
+      // Get the word at the cursor position
       const word = this.getWordAtPosition(linePrefix);
       
-      // ==========================================
-      // IMPORTANT: We need to handle duplicates between our snippets and VS Code's snippets
-      // from hql.json. We'll use a workaround to deduplicate them.
-      // ==========================================
+      // Start building completion items
+      let completions: CompletionItem[] = [];
       
-      // Add template completions based on the current word
-      const templateCompletions = this.getTemplateCompletions(word);
+      // Add document symbols
+      completions = completions.concat(
+        this.getDocumentSymbolCompletions(document, position, word)
+      );
       
-      // Add document symbol completions
-      const symbolCompletions = this.getDocumentSymbolCompletions(document, position, word);
+      // Add template completions
+      completions = completions.concat(
+        this.getTemplateCompletions(word)
+      );
       
-      // Get type-related completions
-      const typeCompletions = this.getTypeCompletions(word);
+      // Add type completions
+      if (word.length > 0) {
+        completions = completions.concat(
+          this.getTypeCompletions(word)
+        );
+      }
       
-      // Create a fully merged and deduplicated result
-      let results = this.mergeAndDeduplicate([...templateCompletions, ...symbolCompletions, ...typeCompletions]);
-      
-      // Sort to ensure template snippets come first
-      results.sort((a, b) => {
-        const aSortText = a.sortText || a.label;
-        const bSortText = b.sortText || b.label;
-        return aSortText.localeCompare(bSortText);
-      });
-      
-      // Handle duplicates between our snippets and VS Code's snippets
-      // VS Code will add snippets from hql.json, but we need to prevent duplicates
-      // We'll use a workaround by adding a special character at the end of our detail fields
-      results = results.map(item => {
-        if (item.kind === CompletionItemKind.Snippet) {
-          // Add a zero-width space to the detail field to make it "different" from VS Code's snippets
-          // This doesn't change visible appearance but makes them different for deduplication
-          item.detail = `${item.detail}\u200B`;
-        }
-        return item;
-      });
-      
-      return results;
+      // Remove duplicates
+      return this.mergeAndDeduplicate(completions);
     } catch (error) {
       console.error(`Error providing completions: ${error}`);
       return [];
@@ -1106,16 +1094,57 @@ export class CompletionProvider {
     const completions: CompletionItem[] = [];
     
     if ('fn'.startsWith(word)) {
+      // Add untyped fn variants
+      completions.push({
+        label: 'fn-untyped',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Untyped Function Definition',
+        insertText: '(fn ${1:name} (${2:param1} ${3:param2})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-fn-untyped',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an untyped function (maximum flexibility)'
+        }
+      });
+
+      completions.push({
+        label: 'fn-untyped-defaults',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Untyped Function with Default Values',
+        insertText: '(fn ${1:name} (${2:param1} = ${3:default1} ${4:param2} = ${5:default2})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-fn-untyped-defaults',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an untyped function with default parameter values'
+        }
+      });
+      
+      completions.push({
+        label: 'fn-untyped-rest',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Untyped Function with Rest Parameters',
+        insertText: '(fn ${1:name} (${2:param1} ${3:param2} & ${4:rest})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-fn-untyped-rest',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an untyped function with rest parameters'
+        }
+      });
+
+      // Add or keep the existing typed function templates
       completions.push({
         label: 'fn-function',
         kind: CompletionItemKind.Snippet,
         detail: 'Function Definition (fn)',
-        insertText: '(fn ${1:name} (${2:param}: ${3:Type})\n  ${0:body})',
+        insertText: '(fn ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})\n  ${0:body})',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-fn', // Highest priority
+        sortText: '01-fn',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates a function definition with snippet placeholders'
+          value: 'Creates a fully typed function definition with return type'
         }
       });
       
@@ -1123,7 +1152,7 @@ export class CompletionProvider {
         label: 'fn-defaults',
         kind: CompletionItemKind.Snippet,
         detail: 'Function with Default Parameters',
-        insertText: '(fn ${1:name} (${2:param}: ${3:Type} = ${4:defaultValue})\n  ${0:body})',
+        insertText: '(fn ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2} = ${7:defaultValue2}) (-> ${8:ReturnType})\n  ${0:body})',
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '01-fn-defaults',
         documentation: {
@@ -1153,12 +1182,12 @@ export class CompletionProvider {
         label: 'fx-pure',
         kind: CompletionItemKind.Snippet,
         detail: 'Pure Function Definition (fx)',
-        insertText: '(fx ${1:name} (${2:param}: ${3:Type}) (-> ${4:ReturnType})\n  ${0:body})',
+        insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})\n  ${0:body})',
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '01-fx', // Highest priority
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates a typed function definition with snippet placeholders'
+          value: 'Creates a pure typed function with mandatory return type'
         }
       });
       
@@ -1166,12 +1195,38 @@ export class CompletionProvider {
         label: 'fx-defaults',
         kind: CompletionItemKind.Snippet,
         detail: 'Pure Function with Default Parameters',
-        insertText: '(fx ${1:name} (${2:param}: ${3:Type} = ${4:defaultValue}) (-> ${5:ReturnType})\n  ${0:body})',
+        insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2} = ${7:defaultValue2}) (-> ${8:ReturnType})\n  ${0:body})',
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '01-fx-defaults',
         documentation: {
           kind: MarkupKind.Markdown,
           value: 'Creates a pure function with default parameter values'
+        }
+      });
+      
+      completions.push({
+        label: 'fx-mixed-defaults',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Pure Function with Mixed Default Parameters',
+        insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2}) (-> ${7:ReturnType})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-fx-mixed',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a pure function with a mix of default and required parameters'
+        }
+      });
+      
+      completions.push({
+        label: 'fx-rest',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Pure Function with Rest Parameters',
+        insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2} & ${6:rest}: [${7:Type3}]) (-> ${8:ReturnType})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-fx-rest',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a pure function with rest parameters'
         }
       });
     }
@@ -1854,29 +1909,262 @@ export class CompletionProvider {
     currentLine: string,
     fullText: string
   ): CompletionItem[] {
-    // Match import statement with a path
-    const importPathMatch = currentLine.match(/import\s+\[\s*([^,\s]*)\s*(?:,\s*([^,\s]*)\s*)?\]\s+from\s+["']([^"']*)$/);
-    if (importPathMatch) {
-      // We're in an import statement with a path
-      const partialPath = importPathMatch[3] || '';
-      
-      // Provide path completions
-      return this.getPathCompletionItems(partialPath, true);
-    }
-    
-    // Check for import statement with module specified but cursor in the symbol area
-    const importSymbolMatch = currentLine.match(/import\s+\[\s*([^,\s]*)?$/);
-    if (importSymbolMatch || currentLine.match(/import\s+\[.*\]\s+from\s+["'](.+)["']\s*$/)) {
-      // Extract module path from elsewhere in the line/context
+    // Match import with vector style syntax: (import [sym
+    const importVectorStartMatch = currentLine.match(/import\s+\[\s*([^,\s]*)$/);
+    if (importVectorStartMatch) {
+      const partialSymbol = importVectorStartMatch[1] || '';
+      // Get module path from elsewhere in the text if available
       const modulePath = fullText.match(/import\s+\[[^\]]*\]\s+from\s+["']([^"']+)["']/)?.[1];
       
       if (modulePath) {
-        // Suggest importable symbols from that module
-        return this.getImportableSymbols(modulePath);
+        // We're in a vector import with a module path, offer symbols from that module
+        return this.getImportableSymbols(modulePath).filter(item => 
+          item.label.toLowerCase().startsWith(partialSymbol.toLowerCase())
+        );
       }
+      return [];
+    }
+    
+    // Match import with continuation of vector symbols: (import [sym1, sym
+    const importVectorContinueMatch = currentLine.match(/import\s+\[.+,\s*([^,\s]*)$/);
+    if (importVectorContinueMatch) {
+      const partialSymbol = importVectorContinueMatch[1] || '';
+      // Get module path from the line
+      const modulePath = fullText.match(/import\s+\[[^\]]*\]\s+from\s+["']([^"']+)["']/)?.[1];
+      
+      if (modulePath) {
+        // Filter symbols that are already imported
+        const alreadyImportedSymbols = currentLine.match(/import\s+\[(.*)\s*,\s*[^,\s]*$/)?.[1].split(',')
+          .map(s => s.trim().split(/\s+as\s+/)[0].trim()) || [];
+          
+        return this.getImportableSymbols(modulePath)
+          .filter(item => 
+            item.label.toLowerCase().startsWith(partialSymbol.toLowerCase()) &&
+            !alreadyImportedSymbols.includes(item.label)
+          );
+      }
+      return [];
+    }
+    
+    // Match namespace import: (import namesp
+    const namespaceImportMatch = currentLine.match(/import\s+([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    if (namespaceImportMatch) {
+      // Suggest common namespace names or module names based on available modules
+      const partialName = namespaceImportMatch[1];
+      return this.getSuggestedNamespaces(partialName);
+    }
+    
+    // Match 'from' keyword: (import [...] from
+    const fromKeywordMatch = currentLine.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+$/);
+    if (fromKeywordMatch) {
+      // The user has typed 'from', suggest quote
+      return [{
+        label: '"',
+        kind: CompletionItemKind.Operator,
+        detail: 'Start path string',
+        insertText: '""',
+        insertTextFormat: InsertTextFormat.Snippet,
+        command: {
+          title: 'Trigger Suggestion',
+          command: 'editor.action.triggerSuggest'
+        }
+      }];
+    }
+    
+    // Match paths after 'from': (import [...] from "path
+    const pathMatch = currentLine.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+["']([^"']*)$/);
+    if (pathMatch) {
+      const partialPath = pathMatch[1] || '';
+      
+      // Provide path completions relative to current document
+      const documentPath = document.uri.replace('file://', '');
+      const documentDir = path.dirname(documentPath);
+      
+      return this.getRelativePathCompletionItems(documentDir, partialPath);
     }
     
     return [];
+  }
+  
+  /**
+   * Get file system completion items for a path relative to the active document
+   */
+  private getRelativePathCompletionItems(
+    documentDir: string,
+    partialPath: string
+  ): CompletionItem[] {
+    const completionItems: CompletionItem[] = [];
+    
+    try {
+      // Determine base directory for the search
+      let basePath = documentDir;
+      let searchPath = partialPath;
+      
+      // Handle relative paths
+      if (partialPath.startsWith('./')) {
+        searchPath = partialPath.substring(2);
+      } else if (partialPath.startsWith('../')) {
+        // For parent directory references, navigate up
+        let parentCount = 0;
+        let currentPath = partialPath;
+        
+        while (currentPath.startsWith('../')) {
+          parentCount++;
+          currentPath = currentPath.substring(3);
+        }
+        
+        // Navigate up parent directories
+        let tempBasePath = basePath;
+        for (let i = 0; i < parentCount; i++) {
+          tempBasePath = path.dirname(tempBasePath);
+        }
+        
+        basePath = tempBasePath;
+        searchPath = currentPath;
+      } else if (partialPath === '.' || partialPath === '..') {
+        // Just a dot or double dot
+        searchPath = '';
+        if (partialPath === '..') {
+          basePath = path.dirname(basePath);
+        }
+      }
+      
+      // If partial path contains additional directory parts, use them as base
+      const lastSlashIndex = searchPath.lastIndexOf('/');
+      if (lastSlashIndex >= 0) {
+        basePath = path.join(basePath, searchPath.substring(0, lastSlashIndex));
+        searchPath = searchPath.substring(lastSlashIndex + 1);
+      }
+      
+      // Read the directory
+      const entries = fs.readdirSync(basePath, { withFileTypes: true });
+      
+      // Filter entries that match the search path
+      for (const entry of entries) {
+        // Skip hidden files unless explicitly looking for them
+        if (entry.name.startsWith('.') && !searchPath.startsWith('.')) {
+          continue;
+        }
+        
+        // Skip node_modules and other typical exclude directories
+        if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') {
+          continue;
+        }
+        
+        // Check if entry matches search prefix
+        if (searchPath === '' || entry.name.toLowerCase().startsWith(searchPath.toLowerCase())) {
+          let entryPath = lastSlashIndex >= 0 
+            ? `${partialPath.substring(0, lastSlashIndex + 1)}${entry.name}`
+            : entry.name;
+            
+          // Preserve the starting ./ or ../ in the completion
+          if (partialPath.startsWith('./') && !entryPath.startsWith('./')) {
+            entryPath = `./${entryPath}`;
+          } else if (partialPath.startsWith('../') && !entryPath.startsWith('../')) {
+            // Count the number of ../ at the beginning
+            const match = partialPath.match(/^(\.\.\/)+/);
+            if (match && match[0]) {
+              entryPath = `${match[0]}${entryPath}`;
+            }
+          }
+          
+          const isDir = entry.isDirectory();
+          const isHqlFile = entry.name.endsWith('.hql');
+          const isJsFile = entry.name.endsWith('.js');
+          
+          // Include directories, .hql and .js files
+          if (isDir || isHqlFile || isJsFile) {
+            const completionItem: CompletionItem = {
+              label: entry.name,
+              kind: isDir ? CompletionItemKind.Folder : CompletionItemKind.File,
+              detail: isDir ? 'Directory' : (isHqlFile ? 'HQL Module' : 'JS Module'),
+              insertText: isDir ? `${entry.name}/` : entry.name,
+              sortText: isDir ? `0-${entry.name}` : `1-${entry.name}` // Sort directories first
+            };
+            
+            // For files, insert just the name (even if file extension isn't in search)
+            if ((isHqlFile && !searchPath.endsWith('.hql')) || 
+                (isJsFile && !searchPath.endsWith('.js'))) {
+              completionItem.insertText = entry.name;
+            }
+            
+            completionItems.push(completionItem);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error getting path completions: ${error}`);
+    }
+    
+    return completionItems;
+  }
+  
+  /**
+   * Get suggested namespace names for namespace imports
+   */
+  private getSuggestedNamespaces(partialName: string): CompletionItem[] {
+    // This could be enhanced to look at available modules and suggest names based on filenames
+    const namespaces: CompletionItem[] = [];
+    
+    try {
+      if (!this.workspaceFolders || this.workspaceFolders.length === 0) {
+        return namespaces;
+      }
+      
+      const workspaceRoot = this.workspaceFolders[0].uri.replace('file://', '');
+      
+      // Recursively find .hql files in the workspace
+      const findHqlFiles = (dir: string, depth: number = 0): string[] => {
+        if (depth > 3) return []; // Limit recursion depth
+        
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          let files: string[] = [];
+          
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            
+            if (entry.isDirectory() && 
+                entry.name !== 'node_modules' && 
+                entry.name !== '.git' && 
+                !entry.name.startsWith('.')) {
+              files = [...files, ...findHqlFiles(fullPath, depth + 1)];
+            } else if (entry.isFile() && entry.name.endsWith('.hql')) {
+              files.push(fullPath);
+            }
+          }
+          
+          return files;
+        } catch (error) {
+          return [];
+        }
+      };
+      
+      const hqlFiles = findHqlFiles(workspaceRoot);
+      
+      // Create suggested namespace names from filenames
+      for (const filePath of hqlFiles) {
+        const relativePath = path.relative(workspaceRoot, filePath);
+        const fileName = path.basename(filePath, '.hql');
+        
+        // Convert filename to camelCase for namespace suggestion
+        const namespaceName = fileName.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        
+        if (namespaceName.toLowerCase().startsWith(partialName.toLowerCase())) {
+          namespaces.push({
+            label: namespaceName,
+            kind: CompletionItemKind.Module,
+            detail: `Namespace for ${relativePath}`,
+            insertText: namespaceName,
+            sortText: `09-${namespaceName}`
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Error getting namespace suggestions: ${error}`);
+    }
+    
+    return namespaces;
   }
   
   /**
@@ -2054,7 +2342,7 @@ export class CompletionProvider {
         if (isList(expr) && expr.elements.length > 0) {
           const first = expr.elements[0];
           if (isSymbol(first) && first.name === 'export') {
-            // Check export syntax: (export [sym1, sym2, ...])
+            // Check vector export syntax: (export [sym1, sym2, ...])
             if (expr.elements.length > 1 && isList(expr.elements[1])) {
               const exportList = expr.elements[1];
               
@@ -2062,10 +2350,21 @@ export class CompletionProvider {
               for (const elem of exportList.elements) {
                 if (isSymbol(elem)) {
                   exportedSymbols.push(elem.name);
+                } else if (isList(elem)) {
+                  // Handle potential 'as' syntax: (export [[original as alias], ...])
+                  // Check if this is an 'as' aliasing expression
+                  if (elem.elements.length > 2 && 
+                      isSymbol(elem.elements[0]) && 
+                      isSymbol(elem.elements[1]) && 
+                      elem.elements[1].name === 'as' && 
+                      isSymbol(elem.elements[2])) {
+                    // Add the original name
+                    exportedSymbols.push(elem.elements[0].name);
+                  }
                 }
               }
             }
-            // Check named export: (export "name" symbol)
+            // Check legacy string-based export: (export "name" symbol)
             else if (expr.elements.length > 2 && isString(expr.elements[1]) && isSymbol(expr.elements[2])) {
               const exportName = expr.elements[1].value;
               exportedSymbols.push(exportName);
@@ -2077,10 +2376,16 @@ export class CompletionProvider {
         if (isList(expr) && expr.elements.length > 2 && isSymbol(expr.elements[0])) {
           const keyword = expr.elements[0].name;
           
-          // Only consider top-level definitions
-          if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct'].includes(keyword)) {
+          // Only consider top-level definitions that can be exported
+          if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct', 'macro'].includes(keyword)) {
             if (isSymbol(expr.elements[1])) {
-              exportedSymbols.push(expr.elements[1].name);
+              const symbolName = expr.elements[1].name;
+              
+              // Only add the symbol if it's not already in the exported list
+              // This way explicitly exported symbols take precedence over inferred exports
+              if (!exportedSymbols.includes(symbolName)) {
+                exportedSymbols.push(symbolName);
+              }
             }
           }
         }
@@ -2228,6 +2533,139 @@ export class CompletionProvider {
     }
     
     return completions;
+  }
+
+  /**
+   * Handle completions for export statements
+   */
+  private handleExportCompletions(
+    document: TextDocument,
+    currentLine: string,
+    fullText: string
+  ): CompletionItem[] {
+    // Match export vector start: (export [
+    const exportVectorStart = currentLine.match(/export\s+\[\s*$/);
+    if (exportVectorStart) {
+      // We're at the beginning of an export vector
+      return this.getExportableSymbols(document);
+    }
+    
+    // Match export vector with partial symbol: (export [sym
+    const exportSymbolMatch = currentLine.match(/export\s+\[\s*([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    if (exportSymbolMatch) {
+      const partialSymbol = exportSymbolMatch[1];
+      return this.getExportableSymbols(document).filter(item => 
+        item.label.toLowerCase().startsWith(partialSymbol.toLowerCase())
+      );
+    }
+    
+    // Match export vector with continuation: (export [sym1, sym
+    const exportContinueMatch = currentLine.match(/export\s+\[.+,\s*([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    if (exportContinueMatch) {
+      const partialSymbol = exportContinueMatch[1];
+      
+      // Find symbols that are already in the export list
+      const alreadyExported = currentLine.match(/export\s+\[(.*)\s*,\s*[^,\s]*$/)?.[1].split(',')
+        .map(s => s.trim().split(/\s+as\s+/)[0].trim()) || [];
+      
+      return this.getExportableSymbols(document).filter(item => 
+        item.label.toLowerCase().startsWith(partialSymbol.toLowerCase()) &&
+        !alreadyExported.includes(item.label)
+      );
+    }
+
+    // Match "as" keyword for aliasing: (export [sym1, symbol as
+    const exportAliasMatch = currentLine.match(/export\s+\[.*\b([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*$/);
+    if (exportAliasMatch) {
+      // Suggest an alias based on the symbol name
+      const symbolName = exportAliasMatch[1];
+      return [{
+        label: `${symbolName}Alias`,
+        kind: CompletionItemKind.Value,
+        detail: `Alias for ${symbolName}`,
+        insertText: `${symbolName}Alias`,
+        sortText: '01-alias'
+      }];
+    }
+    
+    // If just typed 'export', suggest the vector template
+    if (currentLine.trim() === 'export' || currentLine.trim() === '(export') {
+      return [{
+        label: 'export-vector',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Export symbols using vector syntax',
+        insertText: 'export [${1:symbol1}${2:, symbol2}]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Export symbols using the recommended vector syntax'
+        }
+      }];
+    }
+    
+    return [];
+  }
+  
+  /**
+   * Get exportable symbols from current document
+   */
+  private getExportableSymbols(document: TextDocument): CompletionItem[] {
+    const exportableSymbols: CompletionItem[] = [];
+    
+    try {
+      const text = document.getText();
+      const expressions = parse(text, true);
+      
+      // Look for exportable definitions (fn, fx, let, var, enum, etc.)
+      for (const expr of expressions) {
+        if (isList(expr) && expr.elements.length > 1 && isSymbol(expr.elements[0])) {
+          const keyword = expr.elements[0].name;
+          
+          // Check if this is a definition that can be exported
+          if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct', 'macro'].includes(keyword)) {
+            if (isSymbol(expr.elements[1])) {
+              const symbolName = expr.elements[1].name;
+              let kind: CompletionItemKind = CompletionItemKind.Variable;
+              
+              // Determine completion item kind based on the symbol type
+              switch (keyword) {
+                case 'fn':
+                case 'fx':
+                  kind = CompletionItemKind.Function;
+                  break;
+                case 'enum':
+                  kind = CompletionItemKind.EnumMember;
+                  break;
+                case 'class':
+                case 'struct':
+                  kind = CompletionItemKind.Class;
+                  break;
+                case 'macro':
+                  kind = CompletionItemKind.Method;
+                  break;
+              }
+              
+              // Add the completion item for the exportable symbol
+              exportableSymbols.push({
+                label: symbolName,
+                kind,
+                detail: `${keyword} ${symbolName}`,
+                documentation: {
+                  kind: MarkupKind.Markdown,
+                  value: `Export the ${keyword} \`${symbolName}\``
+                },
+                insertText: symbolName,
+                sortText: `0${keyword.length}-${symbolName}`
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error getting exportable symbols: ${error}`);
+    }
+    
+    return exportableSymbols;
   }
 }
 

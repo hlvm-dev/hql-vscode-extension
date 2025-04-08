@@ -291,6 +291,10 @@
           "patterns": [
             { "include": "$self" }
           ]
+        },
+        {
+          "match": "from",
+          "name": "keyword.control.hql"
         }
       ]
     },
