@@ -13,7 +13,14 @@ import { createTextDocumentAdapter } from '../document-adapter';
 import { findExpressionRange } from '../helper/getExpressionRange';
 
 /**
+ * @see {SExp} from parser
+ * @see {SList} from parser
+ * @see {SSymbol} from parser
+ */
+
+/**
  * Extended SymbolInformation with additional data
+ * @see {import('vscode-languageserver').SymbolInformation}
  */
 export interface ExtendedSymbolInformation extends SymbolInformation {
   data?: {
@@ -31,6 +38,8 @@ export interface ExtendedSymbolInformation extends SymbolInformation {
     exported?: boolean;
     imported?: boolean;
     isNamespaceImport?: boolean;
+    isFx?: boolean; // Indicates if the function is an fx function
+    parentClass?: string; // Parent class name for class inheritance
     // Add more data fields as needed
   };
 }
@@ -268,7 +277,7 @@ export class SymbolManager {
   }
   
   /**
-   * Process function definitions (fn, fx)
+   * Process a function definition into symbol information
    */
   private processFunctionDefinition(
     document: TextDocument,
@@ -279,103 +288,114 @@ export class SymbolManager {
   ): void {
     if (expr.elements.length < 3) return;
     
-    const funcType = (expr.elements[0] as SSymbol).name; // 'fn' or 'fx'
+    const funcType = isSymbol(expr.elements[0]) ? (expr.elements[0] as SSymbol).name : ''; // 'fn' or 'fx'
+    const isFx = funcType === 'fx'; // Check if it's an fx function
     
     if (!isSymbol(expr.elements[1])) return;
     
     const funcNameSymbol = expr.elements[1];
-    let funcName = isSymbol(funcNameSymbol) ? funcNameSymbol.name : "anonymous";
+    const funcName = isSymbol(funcNameSymbol) ? funcNameSymbol.name : "anonymous";
     const location = Location.create(document.uri, range);
     
-    // Get parameter list (third element in function definition)
-    const paramList = expr.elements.length > 2 ? expr.elements[2] : null;
-    
-    // Extract parameters
+    // Get parameter list
+    const paramListExpr = expr.elements[2];
     const params: { name: string; type: string; defaultValue?: string }[] = [];
-    let returnType = "Any";
     
-    if (paramList && isList(paramList)) {
-      // Process parameters
-      for (let i = 0; i < paramList.elements.length; i++) {
-        const param = paramList.elements[i];
+    if (isList(paramListExpr)) {
+      for (let i = 0; i < paramListExpr.elements.length; i++) {
+        const paramExpr = paramListExpr.elements[i];
         
-        // Skip rest param marker ('&')
-        if (isSymbol(param) && param.name === '&') {
+        // Handle rest parameters (& rest)
+        if (isSymbol(paramExpr) && paramExpr.name === '&' && i < paramListExpr.elements.length - 1) {
+          const restParamExpr = paramListExpr.elements[i + 1];
+          if (isSymbol(restParamExpr)) {
+            params.push({
+              name: restParamExpr.name,
+              type: 'Rest',
+              defaultValue: undefined
+            });
+          }
+          i++; // Skip the rest parameter symbol
           continue;
         }
         
-        // Skip type annotation marker (':')
-        if (isSymbol(param) && param.name === ':') {
-          continue;
-        }
-        
-        // Skip default value marker ('=')
-        if (isSymbol(param) && param.name === '=') {
-          continue;
-        }
-        
-        // Process regular parameter
-        if (isSymbol(param)) {
-          let paramName = param.name;
-          let paramType = "Any";
-          let defaultValue: string | undefined = undefined;
+        if (isSymbol(paramExpr)) {
+          // Simple parameter without type annotation
+          params.push({
+            name: paramExpr.name,
+            type: 'Any'
+          });
           
-          // Check for type annotation (param: Type)
-          if (i + 2 < paramList.elements.length && 
-              isSymbol(paramList.elements[i+1]) && 
-              (paramList.elements[i+1] as SSymbol).name === ':' && 
-              isSymbol(paramList.elements[i+2])) {
-            paramType = (paramList.elements[i+2] as SSymbol).name;
-            i += 2; // Skip the ':' and type
-            
-            // Check for default value
-            if (i + 2 < paramList.elements.length && 
-                isSymbol(paramList.elements[i+1]) && 
-                (paramList.elements[i+1] as SSymbol).name === '=') {
-              defaultValue = this.serializeExpression(paramList.elements[i+2]);
-              i += 2; // Skip the '=' and default value
+          // Check for default value (might be followed by = and a value)
+          if (i + 2 < paramListExpr.elements.length) {
+            const nextExpr = paramListExpr.elements[i + 1];
+            if (isSymbol(nextExpr) && nextExpr.name === '=') {
+              // Found default value
+              const defaultValueExpr = paramListExpr.elements[i + 2];
+              let defaultValue = this.serializeExpression(defaultValueExpr);
+              
+              // Update the parameter with default value
+              params[params.length - 1].defaultValue = defaultValue;
+              
+              // Skip the = and default value
+              i += 2;
             }
           }
-          // Check for default value without type
-          else if (i + 2 < paramList.elements.length && 
-                   isSymbol(paramList.elements[i+1]) && 
-                   (paramList.elements[i+1] as SSymbol).name === '=') {
-            defaultValue = this.serializeExpression(paramList.elements[i+2]);
-            i += 2; // Skip the '=' and default value
+        } else if (isList(paramExpr) && paramExpr.elements.length >= 3) {
+          // This might be a parameter with type annotation: name: Type
+          const nameExpr = paramExpr.elements[0];
+          const colonExpr = paramExpr.elements[1];
+          const typeExpr = paramExpr.elements[2];
+          
+          if (isSymbol(nameExpr) && isSymbol(colonExpr) && colonExpr.name === ':' && isSymbol(typeExpr)) {
+            const param = {
+              name: nameExpr.name,
+              type: typeExpr.name
+            };
+            
+            // Check for default value (= defaultValue)
+            if (paramExpr.elements.length >= 5 && 
+                isSymbol(paramExpr.elements[3]) && 
+                paramExpr.elements[3].name === '=') {
+              const defaultValueExpr = paramExpr.elements[4];
+              const defaultValue = this.serializeExpression(defaultValueExpr);
+              
+              // @ts-ignore
+              param.defaultValue = defaultValue;
+            }
+            
+            params.push(param);
           }
-          
-          params.push({ 
-            name: paramName, 
-            type: paramType,
-            defaultValue
-          });
         }
       }
     }
     
-    // Extract return type from typed function
-    if (expr.elements.length > 3 && isList(expr.elements[3])) {
-      const returnTypeExpr = expr.elements[3] as SList;
-      if (returnTypeExpr.elements.length >= 2 && 
-          isSymbol(returnTypeExpr.elements[0]) && 
-          returnTypeExpr.elements[0].name === '->') {
-          
-        // Get return type from the -> expression  
-        if (isSymbol(returnTypeExpr.elements[1])) {
-          returnType = returnTypeExpr.elements[1].name;
+    // Check for return type
+    let returnType: string | undefined;
+    if (expr.elements.length > 3) {
+      const returnTypeExpr = expr.elements[3];
+      
+      if (isList(returnTypeExpr) && returnTypeExpr.elements.length >= 2) {
+        const arrowExpr = returnTypeExpr.elements[0];
+        if (isSymbol(arrowExpr) && arrowExpr.name === '->') {
+          const typeExpr = returnTypeExpr.elements[1];
+          if (isSymbol(typeExpr)) {
+            returnType = typeExpr.name;
+          }
         }
       }
     }
-    
+
     // Create function symbol with parameter data
     symbols.push({
       name: funcName,
-      kind: 12 as SymbolKind,
-      location,
+      kind: SymbolKind.Function,
+      location: location,
       data: {
         documentation,
         params,
-        returnType
+        returnType,
+        isFx // Flag whether it's a pure function (fx) or general function (fn)
       }
     });
   }
@@ -448,7 +468,7 @@ export class SymbolManager {
   }
   
   /**
-   * Process class/struct definitions
+   * Process a class definition into symbol information
    */
   private processClassDefinition(
     document: TextDocument,
@@ -457,202 +477,73 @@ export class SymbolManager {
     range: Range,
     documentation: string
   ): void {
-    if (expr.elements.length < 2 || !isSymbol(expr.elements[1])) return;
+    if (expr.elements.length < 3) return;
     
-    const isClass = (expr.elements[0] as SSymbol).name === 'class';
-    const className = (expr.elements[1] as SSymbol).name;
-    const location = Location.create(document.uri, range);
+    // Get class name
+    const classNameSymbol = expr.elements[1];
+    if (!isSymbol(classNameSymbol)) return;
+    const className = classNameSymbol.name;
     
-    // Add class/struct symbol
+    // Parse extends clause
+    let parentClass: string | undefined;
+    let bodyStart = 2;
+    
+    if (expr.elements.length > 3 && 
+        isSymbol(expr.elements[2]) && 
+        expr.elements[2].name === 'extends' && 
+        isSymbol(expr.elements[3])) {
+      parentClass = expr.elements[3].name;
+      bodyStart = 4;
+    }
+    
+    // Create class symbol
     symbols.push({
       name: className,
-      kind: isClass ? 5 as SymbolKind : 23 as SymbolKind,
-      location,
+      kind: SymbolKind.Class,
+      location: Location.create(document.uri, range),
       data: {
-        documentation
+        documentation,
+        parentClass
       }
     });
     
-    // Create adapted document for member processing
+    // Create adapted document for member range finding
     const adaptedDoc = createTextDocumentAdapter(document);
     
-    // Process class members
-    for (let i = 2; i < expr.elements.length; i++) {
-      const member = expr.elements[i];
-      if (!isList(member)) continue;
+    // Process class body (fields, methods, etc.)
+    for (let i = bodyStart; i < expr.elements.length; i++) {
+      const element = expr.elements[i];
+      if (!isList(element)) continue;
       
-      const memberList = member as SList;
-      if (memberList.elements.length === 0 || !isSymbol(memberList.elements[0])) continue;
+      // Get a range for the class member
+      const memberRange = findExpressionRange(adaptedDoc, element);
       
-      const memberType = (memberList.elements[0] as SSymbol).name;
+      // Extract documentation for this member
+      const memberDoc = this.extractDocumentation(
+        document, 
+        element, 
+        i > bodyStart ? expr.elements[i - 1] : undefined
+      );
       
-      // Process class fields
-      if ((memberType === 'var' || memberType === 'let') && 
-          memberList.elements.length >= 2 && 
-          isSymbol(memberList.elements[1])) {
+      // Process the class member based on type
+      if (element.elements.length > 0 && isSymbol(element.elements[0])) {
+        const keyword = element.elements[0].name;
         
-        const fieldName = (memberList.elements[1] as SSymbol).name;
-        const memberRange = findExpressionRange(adaptedDoc, memberList);
-        const memberLocation = Location.create(document.uri, memberRange);
-        
-        // Try to determine field type
-        let fieldType = "Any";
-        if (memberList.elements.length >= 3) {
-          try {
-            fieldType = this.inferExpressionType(memberList.elements[2]);
-          } catch (e) {
-            // Ignore errors in type inference
-          }
+        switch (keyword) {
+          case 'var':
+          case 'let':
+            this.processClassField(document, element as SList, className, symbols, memberRange);
+            break;
+            
+          case 'fn':
+          case 'fx':
+            this.processClassMethod(document, element as SList, className, symbols, memberRange, memberDoc);
+            break;
+            
+          case 'constructor':
+            this.processConstructor(document, element as SList, className, symbols, memberRange);
+            break;
         }
-        
-        symbols.push({
-          name: `${className}.${fieldName}`,
-          kind: 13 as SymbolKind,
-          location: memberLocation,
-          data: {
-            type: fieldType
-          }
-        });
-      }
-      
-      // Process class methods
-      else if ((memberType === 'fn' || memberType === 'fx' || memberType === 'method') && 
-               memberList.elements.length >= 3 && 
-               isSymbol(memberList.elements[1])) {
-        
-        const methodName = (memberList.elements[1] as SSymbol).name;
-        const memberRange = findExpressionRange(adaptedDoc, memberList);
-        const memberLocation = Location.create(document.uri, memberRange);
-        
-        // Extract method parameters
-        const params: { name: string; type: string; defaultValue?: string }[] = [];
-        let returnType = "Any";
-        
-        if (memberList.elements.length > 2 && isList(memberList.elements[2])) {
-          const paramList = memberList.elements[2] as SList;
-          
-          // Extract params similar to function definition
-          for (let j = 0; j < paramList.elements.length; j++) {
-            if (isSymbol(paramList.elements[j])) {
-              let paramName = (paramList.elements[j] as SSymbol).name;
-              let paramType = "Any";
-              let defaultValue: string | undefined = undefined;
-              
-              // Check for type annotation (param: Type)
-              if (j + 2 < paramList.elements.length && 
-                  isSymbol(paramList.elements[j+1]) && 
-                  (paramList.elements[j+1] as SSymbol).name === ':' && 
-                  isSymbol(paramList.elements[j+2])) {
-                paramType = (paramList.elements[j+2] as SSymbol).name;
-                j += 2; // Skip the ':' and type
-                
-                // Check for default value
-                if (j + 2 < paramList.elements.length && 
-                    isSymbol(paramList.elements[j+1]) && 
-                    (paramList.elements[j+1] as SSymbol).name === '=') {
-                  defaultValue = this.serializeExpression(paramList.elements[j+2]);
-                  j += 2; // Skip the '=' and default value
-                }
-              }
-              // Check for default value without type
-              else if (j + 2 < paramList.elements.length && 
-                       isSymbol(paramList.elements[j+1]) && 
-                       (paramList.elements[j+1] as SSymbol).name === '=') {
-                defaultValue = this.serializeExpression(paramList.elements[j+2]);
-                j += 2; // Skip the '=' and default value
-              }
-              
-              params.push({ 
-                name: paramName, 
-                type: paramType,
-                defaultValue
-              });
-            }
-          }
-        }
-        
-        // Extract return type if present
-        if (memberList.elements.length > 3 && isList(memberList.elements[3])) {
-          const returnTypeList = memberList.elements[3] as SList;
-          if (returnTypeList.elements.length >= 2 && 
-              isSymbol(returnTypeList.elements[0]) && 
-              returnTypeList.elements[0].name === '->' &&
-              isSymbol(returnTypeList.elements[1])) {
-            returnType = returnTypeList.elements[1].name;
-          }
-        }
-        
-        symbols.push({
-          name: `${className}.${methodName}`,
-          kind: 13 as SymbolKind,
-          location: memberLocation,
-          data: {
-            params,
-            returnType
-          }
-        });
-      }
-      
-      // Process constructor
-      else if (memberType === 'constructor' && memberList.elements.length >= 2) {
-        // Create adapted document for constructor processing
-        const adaptedDoc = createTextDocumentAdapter(document);
-        
-        const memberRange = findExpressionRange(adaptedDoc, memberList);
-        const memberLocation = Location.create(document.uri, memberRange);
-        
-        // Extract constructor parameters
-        const params: { name: string; type: string; defaultValue?: string }[] = [];
-        
-        if (isList(memberList.elements[1])) {
-          const paramList = memberList.elements[1] as SList;
-          
-          // Extract params similar to function definition
-          for (let j = 0; j < paramList.elements.length; j++) {
-            if (isSymbol(paramList.elements[j])) {
-              let paramName = (paramList.elements[j] as SSymbol).name;
-              let paramType = "Any";
-              let defaultValue: string | undefined = undefined;
-              
-              // Type annotation logic (abbreviated - same as above)
-              if (j + 2 < paramList.elements.length && 
-                  isSymbol(paramList.elements[j+1]) && 
-                  (paramList.elements[j+1] as SSymbol).name === ':' && 
-                  isSymbol(paramList.elements[j+2])) {
-                paramType = (paramList.elements[j+2] as SSymbol).name;
-                j += 2;
-                
-                // Default value logic (abbreviated)
-                if (j + 2 < paramList.elements.length && 
-                    isSymbol(paramList.elements[j+1]) && 
-                    (paramList.elements[j+1] as SSymbol).name === '=') {
-                  defaultValue = this.serializeExpression(paramList.elements[j+2]);
-                  j += 2;
-                }
-              } else if (j + 2 < paramList.elements.length && 
-                         isSymbol(paramList.elements[j+1]) && 
-                         (paramList.elements[j+1] as SSymbol).name === '=') {
-                defaultValue = this.serializeExpression(paramList.elements[j+2]);
-                j += 2;
-              }
-              
-              params.push({ 
-                name: paramName, 
-                type: paramType,
-                defaultValue
-              });
-            }
-          }
-        }
-        
-        symbols.push({
-          name: `${className}.constructor`,
-          kind: 13 as SymbolKind,
-          location: memberLocation,
-          data: {
-            params
-          }
-        });
       }
     }
   }
@@ -1290,5 +1181,264 @@ export class SymbolManager {
           }
         }
       }
+    }
+
+    /**
+     * Process a class method definition into symbol information
+     */
+    private processClassMethod(
+      document: TextDocument,
+      expr: SList,
+      className: string,
+      symbols: ExtendedSymbolInformation[],
+      range: Range,
+      documentation: string
+    ): void {
+      if (expr.elements.length < 3) return;
+      
+      const methodType = isSymbol(expr.elements[0]) ? (expr.elements[0] as SSymbol).name : '';
+      const isFx = methodType === 'fx'; // Check if it's a pure method
+      
+      if (!isSymbol(expr.elements[1])) return;
+      
+      const methodNameSymbol = expr.elements[1];
+      const methodName = isSymbol(methodNameSymbol) ? methodNameSymbol.name : "anonymous";
+      const qualifiedName = `${className}.${methodName}`;
+      const location = Location.create(document.uri, range);
+      
+      // Get parameter list
+      const paramListExpr = expr.elements.length > 2 ? expr.elements[2] : null;
+      const params: { name: string; type: string; defaultValue?: string }[] = [];
+      
+      if (paramListExpr && isList(paramListExpr)) {
+        for (let i = 0; i < paramListExpr.elements.length; i++) {
+          const paramExpr = paramListExpr.elements[i];
+          
+          // Handle rest parameters (& rest)
+          if (isSymbol(paramExpr) && paramExpr.name === '&' && i < paramListExpr.elements.length - 1) {
+            const restParamExpr = paramListExpr.elements[i + 1];
+            if (isSymbol(restParamExpr)) {
+              params.push({
+                name: restParamExpr.name,
+                type: 'Rest',
+                defaultValue: undefined
+              });
+            }
+            i++; // Skip the rest parameter symbol
+            continue;
+          }
+          
+          if (isSymbol(paramExpr)) {
+            // Simple parameter without type annotation
+            params.push({
+              name: paramExpr.name,
+              type: 'Any'
+            });
+            
+            // Check for default value (might be followed by = and a value)
+            if (i + 2 < paramListExpr.elements.length) {
+              const nextExpr = paramListExpr.elements[i + 1];
+              if (isSymbol(nextExpr) && nextExpr.name === '=') {
+                // Found default value
+                const defaultValueExpr = paramListExpr.elements[i + 2];
+                let defaultValue = this.serializeExpression(defaultValueExpr);
+                
+                // Update the parameter with default value
+                params[params.length - 1].defaultValue = defaultValue;
+                
+                // Skip the = and default value
+                i += 2;
+              }
+            }
+          } else if (isList(paramExpr) && paramExpr.elements.length >= 3) {
+            // This might be a parameter with type annotation: name: Type
+            const nameExpr = paramExpr.elements[0];
+            const colonExpr = paramExpr.elements[1];
+            const typeExpr = paramExpr.elements[2];
+            
+            if (isSymbol(nameExpr) && isSymbol(colonExpr) && colonExpr.name === ':' && isSymbol(typeExpr)) {
+              const param = {
+                name: nameExpr.name,
+                type: typeExpr.name
+              };
+              
+              // Check for default value (= defaultValue)
+              if (paramExpr.elements.length >= 5 && 
+                  isSymbol(paramExpr.elements[3]) && 
+                  paramExpr.elements[3].name === '=') {
+                const defaultValueExpr = paramExpr.elements[4];
+                const defaultValue = this.serializeExpression(defaultValueExpr);
+                
+                // @ts-ignore
+                param.defaultValue = defaultValue;
+              }
+              
+              params.push(param);
+            }
+          }
+        }
+      }
+      
+      // Check for return type
+      let returnType: string | undefined;
+      if (expr.elements.length > 3) {
+        const returnTypeExpr = expr.elements[3];
+        
+        if (isList(returnTypeExpr) && returnTypeExpr.elements.length >= 2) {
+          const arrowExpr = returnTypeExpr.elements[0];
+          if (isSymbol(arrowExpr) && arrowExpr.name === '->') {
+            const typeExpr = returnTypeExpr.elements[1];
+            if (isSymbol(typeExpr)) {
+              returnType = typeExpr.name;
+            }
+          }
+        }
+      }
+      
+      // Create method symbol with parameter data
+      symbols.push({
+        name: qualifiedName,
+        kind: SymbolKind.Method,
+        location: location,
+        data: {
+          documentation,
+          params,
+          returnType,
+          isFx // Flag whether it's a pure method (fx) or general method (fn)
+        }
+      });
+    }
+
+    /**
+     * Process a class field definition into symbol information
+     */
+    private processClassField(
+      document: TextDocument,
+      expr: SList,
+      className: string,
+      symbols: ExtendedSymbolInformation[],
+      range: Range
+    ): void {
+      if (expr.elements.length < 2 || !isSymbol(expr.elements[1])) return;
+      
+      const fieldName = (expr.elements[1] as SSymbol).name;
+      const qualifiedName = `${className}.${fieldName}`;
+      const location = Location.create(document.uri, range);
+      
+      // Try to determine field type
+      let fieldType = "Any";
+      let documentation = "";
+      
+      // Check for type annotation (:) in field declaration
+      if (expr.elements.length >= 4 && 
+          isSymbol(expr.elements[2]) && 
+          expr.elements[2].name === ':' && 
+          isSymbol(expr.elements[3])) {
+        fieldType = expr.elements[3].name;
+      }
+      // Otherwise try to infer type from value
+      else if (expr.elements.length >= 3) {
+        try {
+          fieldType = this.inferExpressionType(expr.elements[2]);
+        } catch (e) {
+          // Ignore errors in type inference
+        }
+      }
+      
+      symbols.push({
+        name: qualifiedName,
+        kind: SymbolKind.Field,
+        location: location,
+        data: {
+          documentation,
+          type: fieldType
+        }
+      });
+    }
+    
+    /**
+     * Process a constructor definition into symbol information
+     */
+    private processConstructor(
+      document: TextDocument,
+      expr: SList,
+      className: string,
+      symbols: ExtendedSymbolInformation[],
+      range: Range
+    ): void {
+      if (expr.elements.length < 2) return;
+      
+      const qualifiedName = `${className}.constructor`;
+      const location = Location.create(document.uri, range);
+      let documentation = "";
+      
+      // Extract constructor parameters
+      const params: { name: string; type: string; defaultValue?: string }[] = [];
+      const paramListExpr = expr.elements[1];
+      
+      if (isList(paramListExpr)) {
+        for (let i = 0; i < paramListExpr.elements.length; i++) {
+          const paramExpr = paramListExpr.elements[i];
+          
+          if (isSymbol(paramExpr)) {
+            // Simple parameter without type annotation
+            params.push({
+              name: paramExpr.name,
+              type: 'Any'
+            });
+            
+            // Check for default value (might be followed by = and a value)
+            if (i + 2 < paramListExpr.elements.length) {
+              const nextExpr = paramListExpr.elements[i + 1];
+              if (isSymbol(nextExpr) && nextExpr.name === '=') {
+                // Found default value
+                const defaultValueExpr = paramListExpr.elements[i + 2];
+                let defaultValue = this.serializeExpression(defaultValueExpr);
+                
+                // Update the parameter with default value
+                params[params.length - 1].defaultValue = defaultValue;
+                
+                // Skip the = and default value
+                i += 2;
+              }
+            }
+          } else if (isList(paramExpr) && paramExpr.elements.length >= 3) {
+            // This might be a parameter with type annotation: name: Type
+            const nameExpr = paramExpr.elements[0];
+            const colonExpr = paramExpr.elements[1];
+            const typeExpr = paramExpr.elements[2];
+            
+            if (isSymbol(nameExpr) && isSymbol(colonExpr) && colonExpr.name === ':' && isSymbol(typeExpr)) {
+              const param = {
+                name: nameExpr.name,
+                type: typeExpr.name
+              };
+              
+              // Check for default value (= defaultValue)
+              if (paramExpr.elements.length >= 5 && 
+                  isSymbol(paramExpr.elements[3]) && 
+                  paramExpr.elements[3].name === '=') {
+                const defaultValueExpr = paramExpr.elements[4];
+                const defaultValue = this.serializeExpression(defaultValueExpr);
+                
+                // @ts-ignore
+                param.defaultValue = defaultValue;
+              }
+              
+              params.push(param);
+            }
+          }
+        }
+      }
+      
+      symbols.push({
+        name: qualifiedName,
+        kind: SymbolKind.Constructor,
+        location: location,
+        data: {
+          documentation,
+          params
+        }
+      });
     }
   }

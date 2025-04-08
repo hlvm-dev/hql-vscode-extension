@@ -22,6 +22,8 @@ import { SymbolManager, ExtendedSymbolInformation } from './symbolManager';
 
 /**
  * CompletionProvider handles intelligent code completion for HQL
+ * @see {import('vscode-languageserver').CompletionItem}
+ * @see {import('vscode-languageserver').CompletionItemKind}
  */
 export class CompletionProvider {
   private symbolManager: SymbolManager;
@@ -65,7 +67,7 @@ export class CompletionProvider {
         start: { line: position.line, character: 0 },
         end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
       });
-
+  
       // Special case for import 'from' followed by dot, even when no symbol is between import and from
       // This matches both: (import from ".") and (import [sym] from ".")
       const importFromDotMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])(\.*)(["']?)$/);
@@ -185,7 +187,7 @@ export class CompletionProvider {
         return this.getRelativePathCompletionItems(documentDir, fullPath);
       }
       
-      // Check for enum values in type context: (install os: |)
+      // Check for enum values in function call context: (install os: |)
       const paramWithTypeMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s*$/);
       if (paramWithTypeMatch) {
         // Find the function and parameter name to get type context
@@ -278,7 +280,7 @@ export class CompletionProvider {
           return methodChainCompletions;
         }
       }
-
+  
       // Get the word at the cursor position
       const word = this.getWordAtPosition(linePrefix);
       
@@ -326,7 +328,7 @@ export class CompletionProvider {
    * Get enum value completions for a parameter that expects an enum type
    */
     private getParameterEnumValueCompletions(
-      document: TextDocument,
+      document: TextDocument, 
       functionName: string,
       paramName: string,
       shorthandDotNotation: boolean = false
@@ -508,8 +510,9 @@ export class CompletionProvider {
     if (!linePrefix.endsWith('.')) return [];
     
     const beforeDot = linePrefix.slice(0, -1).trim();
+    const symbols = this.symbolManager.getDocumentSymbols(document.uri);
     
-    // Check for function parameter with enum type: (install os: .)
+    // 1. Check for parameter context in function call: (install os: .)
     const paramTypeMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
     if (paramTypeMatch) {
       const [_, funcName, paramName] = paramTypeMatch;
@@ -523,44 +526,10 @@ export class CompletionProvider {
       }
     }
     
-    // First try to parse the current expression to get better context
-    const currentExpression = getCurrentExpression(document, position);
-    if (currentExpression) {
-      const adaptedDoc = createTextDocumentAdapter(document);
-      const symbols = this.symbolManager.getDocumentSymbols(document.uri);
-      
-      // Look for parameter type annotations in the current expression
-      const paramTypeMatch = beforeDot.match(/(\w+)\s*:\s*(\w+)$/);
-      if (paramTypeMatch) {
-        const [_, paramName, typeName] = paramTypeMatch;
-        
-        // Find if this type is an enum
-        const enumType = symbols.find(s => 
-          s.kind === 10 && // Enum
-          s.name === typeName
-        );
-        
-        if (enumType) {
-          return this.getEnumValueCompletions(document, typeName);
-        }
-      }
-      
-      // Check for usage in equality expression (= .enumCase var)
-      // This is for when dot notation is used in equality expressions
-      const equalityMatch = currentLine.match(/\(\s*=\s+\.\s*$/);
-      if (equalityMatch) {
-        // Look back up to find the type of the variable being compared
-        // This is complex and might require looking at other lines
-        // For now, return all known enum cases as potential completions
-        return this.getAllEnumCaseCompletions(document);
-      }
-    }
-    
-    // If no parameter type found, check if the identifier before dot is an enum type
+    // 2. Check for direct enum type reference (Type.case)
     const enumMatch = beforeDot.match(/([A-Za-z_][A-Za-z0-9_]*)$/);
     if (enumMatch) {
       const [_, typeName] = enumMatch;
-      const symbols = this.symbolManager.getDocumentSymbols(document.uri);
       
       // Verify this is actually an enum type
       const enumType = symbols.find(s => 
@@ -573,16 +542,118 @@ export class CompletionProvider {
       }
     }
     
-    // Special handling for shorthand dot notation in typed contexts (.enumCase)
+    // 3. Try to parse current expression for better context
+    const currentExpression = getCurrentExpression(document, position);
+    if (currentExpression) {
+      const adaptedDoc = createTextDocumentAdapter(document);
+      
+      // 3.1 Check for parameter type annotations in the current expression
+      const paramTypeAnnotationMatch = beforeDot.match(/(\w+)\s*:\s*(\w+)$/);
+      if (paramTypeAnnotationMatch) {
+        const [_, paramName, typeName] = paramTypeAnnotationMatch;
+        
+        // Find if this type is an enum
+        const enumType = symbols.find(s => 
+          s.kind === 10 && // Enum
+          s.name === typeName
+        );
+        
+        if (enumType) {
+          return this.getEnumValueCompletions(document, typeName);
+        }
+      }
+      
+      // 3.2 Check for usage in equality expression (= .enumCase var)
+      const equalityMatch = currentLine.match(/\(\s*=\s+\.\s*$/);
+      if (equalityMatch) {
+        // This could be an enum comparison, try to find the enum type from context
+        if (isList(currentExpression) && currentExpression.elements.length >= 2) {
+          const op = currentExpression.elements[0];
+          if (isSymbol(op) && op.name === "=") {
+            // We're in an equality comparison - try to find enum types in siblings
+            for (let i = 1; i < currentExpression.elements.length; i++) {
+              const element = currentExpression.elements[i];
+              
+              // Skip the current "." element
+              if (isSymbol(element) && element.name === ".") continue;
+              
+              if (isSymbol(element)) {
+                // Check if this symbol is a variable with an enum type
+                const varSymbol = symbols.find(s => 
+                  s.kind === 13 && // Variable
+                  s.name === element.name &&
+                  s.data?.type
+                );
+                
+                if (varSymbol && this.symbolManager.isEnumType(varSymbol.data!.type!)) {
+                  return this.getEnumValueCompletions(document, varSymbol.data!.type!, true);
+                }
+                
+                // Check if this symbol is itself an enum type
+                const enumType = symbols.find(s => 
+                  s.kind === 10 && // Enum
+                  s.name === element.name
+                );
+                
+                if (enumType) {
+                  return this.getEnumValueCompletions(document, element.name, true);
+                }
+              }
+            }
+          }
+        }
+        
+        // If we couldn't determine a specific enum type, show all enum cases as a fallback
+        return this.getAllEnumCaseCompletions(document);
+      }
+    }
+    
+    // 4. Check if we're in a pattern matching case for an enum
+    const matchPatternMatch = currentLine.match(/\(\s*match\s+(\w+).*\(\s*\.\s*$/);
+    if (matchPatternMatch) {
+      const [_, matchedVar] = matchPatternMatch;
+      
+      // Find the type of the matched variable
+      const varSymbol = symbols.find(s => 
+        s.kind === 13 && // Variable
+        s.name === matchedVar &&
+        s.data?.type
+      );
+      
+      if (varSymbol && this.symbolManager.isEnumType(varSymbol.data!.type!)) {
+        return this.getEnumValueCompletions(document, varSymbol.data!.type!, true);
+      }
+    }
+    
+    // 5. If we're in a function parameter list, don't show unrelated enum completions
+    const inParamListMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[^)]*\.$/);
+    if (inParamListMatch) {
+      // We're likely in a function parameter list, don't show general enum completions
+      return [];
+    }
+    
+    // 6. Check for JS object methods/properties instead of enums
+    const qualifiedNameMatch = beforeDot.match(/([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    if (qualifiedNameMatch) {
+      const [_, objName] = qualifiedNameMatch;
+      
+      // Check if this could be a JavaScript object
+      if (['console', 'Math', 'JSON', 'Object', 'Array', 'String'].includes(objName)) {
+        // Don't show enum completions for JS objects - handled by other methods
+        return [];
+      }
+    }
+    
+    // 7. Special handling for shorthand dot notation in specific contexts
     // If we're at the start of an argument list, suggest all enum cases
     const startOfArg = linePrefix.match(/[\(,]\s*\.\s*$/);
     if (startOfArg) {
       return this.getAllEnumCaseCompletions(document);
     }
     
+    // Default: don't return enum completions for random dots
     return [];
   }
-  
   
   /**
    * Get all enum case completions from all enum types in the document
@@ -628,6 +699,7 @@ export class CompletionProvider {
     
     return allEnumCases;
   }
+  
   
   
   /**
@@ -839,6 +911,7 @@ export class CompletionProvider {
               
               for (let i = 2; i < expr.elements.length; i++) {
                 const caseExpr = expr.elements[i];
+                
                 if (isList(caseExpr) && caseExpr.elements.length >= 2) {
                   const caseKeyword = caseExpr.elements[0];
                   const caseName = caseExpr.elements[1];
@@ -878,8 +951,10 @@ export class CompletionProvider {
     return [];
   }
   
+  
   /**
    * Get parameter completions for a function
+   * Provides comprehensive function call patterns based on function signature
    */
   private getParameterCompletions(document: TextDocument, funcName: string): CompletionItem[] {
     // Find the function in document symbols
@@ -889,35 +964,293 @@ export class CompletionProvider {
       s.name === funcName
     );
     
-    if (functionSymbol && functionSymbol.data?.params) {
-      return functionSymbol.data.params.map(param => {
-        // Create base completion item
-        const item: CompletionItem = {
-          label: param.name,
-          kind: CompletionItemKind.Variable,
-          detail: `Parameter: ${param.type || 'Any'}`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `Parameter for function \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
-          },
-          sortText: `0-${param.name}` // Sort parameters to the top
-        };
-        
-        // For a more standard implementation, use parameter name with colon
-        // This is more helpful for named parameter usage
-        if (param.type) {
-          item.insertText = `${param.name}: \${1:${param.type}}`;
-          item.insertTextFormat = InsertTextFormat.Snippet;
-        } else {
-          item.insertText = `${param.name}: \${1}`;
-          item.insertTextFormat = InsertTextFormat.Snippet;
-        }
-        
-        return item;
-      });
+    // If we can't find the function or it has no parameters, return empty
+    if (!functionSymbol || !functionSymbol.data?.params) {
+      return [];
     }
     
-    return [];
+    const params = functionSymbol.data.params;
+    const returnType = functionSymbol.data.returnType || 'Any';
+    // Check if this is an fx function based on the isFx flag
+    const isFx = functionSymbol.data?.isFx || false;
+    
+    // Check which parameters are required vs optional (have default values)
+    const requiredParams = params.filter(p => !p.defaultValue);
+    const optionalParams = params.filter(p => p.defaultValue);
+    const allParamsHaveDefaults = requiredParams.length === 0 && optionalParams.length > 0;
+    
+    const completions: CompletionItem[] = [];
+    
+    // 1. Add individual named parameter completions - ONLY VALID ONES
+    if (allParamsHaveDefaults) {
+      // If all params have defaults, every parameter can be specified individually
+      params.forEach(param => {
+        // Create named parameter completion
+        const placeholder = param.type || 'value';
+        const item: CompletionItem = {
+          label: `${param.name}:`,
+          kind: CompletionItemKind.Property,
+          detail: `Parameter: ${param.type || 'Any'}${param.defaultValue ? ` = ${param.defaultValue}` : ''}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Named parameter for \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
+          },
+          sortText: `10-${param.name}`,
+          insertText: `${param.name}: \${1:${placeholder}}`,
+          insertTextFormat: InsertTextFormat.Snippet
+        };
+        
+        completions.push(item);
+      });
+    } else if (requiredParams.length === 1 && optionalParams.length > 0) {
+      // Special case: one required parameter + optional ones
+      // We can offer just the required parameter as a valid named completion
+      const param = requiredParams[0];
+      const placeholder = param.type || 'value';
+      const item: CompletionItem = {
+        label: `${param.name}:`,
+        kind: CompletionItemKind.Property,
+        detail: `Required parameter: ${param.type || 'Any'}`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Required named parameter for \`${funcName}\``
+        },
+        sortText: `05-${param.name}`,
+        insertText: `${param.name}: \${1:${placeholder}}`,
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(item);
+    }
+    
+    // 2. Full function call with positional arguments (all parameters)
+    if (params.length > 0) {
+      const positionalSnippet = params.map((p, i) => {
+        const placeholder = p.type || 'value';
+        return `\${${i+1}:${placeholder}}`;
+      }).join(' ');
+      
+      const positionalCall: CompletionItem = {
+        label: `[positional]`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Complete call with positional arguments: (${funcName} ${params.map(p => p.type || 'Any').join(' ')})${returnType ? ` -> ${returnType}` : ''}`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with all parameters in positional style.\n\nSignature: \`(${funcName} ${params.map(p => p.type || 'Any').join(' ')})\``
+        },
+        sortText: '01-all-positional',
+        insertText: positionalSnippet,
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(positionalCall);
+    }
+    
+    // 3. Full function call with named arguments (all parameters)
+    if (params.length > 0) {
+      const namedSnippet = params.map((p, i) => {
+        const placeholder = p.type || 'value';
+        return `${p.name}: \${${i+1}:${placeholder}}`;
+      }).join(' ');
+      
+      const namedCall: CompletionItem = {
+        label: `[named]`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Complete call with named arguments: (${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with all parameters in named style.\n\nSignature: \`(${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+        },
+        sortText: '02-all-named',
+        insertText: namedSnippet,
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(namedCall);
+    }
+    
+    // 4. Named parameters in alternate order (if there are multiple parameters)
+    if (params.length > 1) {
+      const reversedParams = [...params].reverse();
+      const reversedNamedSnippet = reversedParams.map((p, i) => {
+        const placeholder = p.type || 'value';
+        return `${p.name}: \${${reversedParams.length-i}:${placeholder}}`;
+      }).join(' ');
+      
+      const reversedNamedCall: CompletionItem = {
+        label: `[named - alt order]`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Call with named arguments in alternate order: (${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call with named parameters in alternate order.\n\nSignature: \`(${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+        },
+        sortText: '03-named-reverse',
+        insertText: reversedNamedSnippet,
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(reversedNamedCall);
+    }
+    
+    // 5. If some parameters have defaults, add call patterns with just required parameters
+    if (requiredParams.length > 0 && optionalParams.length > 0) {
+      // Positional style (required only)
+      const requiredPositionalSnippet = requiredParams.map((p, i) => {
+        const placeholder = p.type || 'value';
+        return `\${${i+1}:${placeholder}}`;
+      }).join(' ');
+      
+      const requiredPositionalCall: CompletionItem = {
+        label: `[required only]`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Call with required parameters only: (${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call with only required parameters in positional style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})\``
+        },
+        sortText: '04-required-positional',
+        insertText: requiredPositionalSnippet,
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(requiredPositionalCall);
+      
+      // Named style (required only)
+      if (requiredParams.length > 0) {
+        const requiredNamedSnippet = requiredParams.map((p, i) => {
+          const placeholder = p.type || 'value';
+          return `${p.name}: \${${i+1}:${placeholder}}`;
+        }).join(' ');
+        
+        const requiredNamedCall: CompletionItem = {
+          label: `[required named]`,
+          kind: CompletionItemKind.Snippet,
+          detail: `Call with required parameters only (named): (${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Function call with only required parameters in named style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+          },
+          sortText: '05-required-named',
+          insertText: requiredNamedSnippet,
+          insertTextFormat: InsertTextFormat.Snippet
+        };
+        completions.push(requiredNamedCall);
+      }
+    }
+    
+    // 6. If all parameters have defaults, add empty call pattern
+    if (allParamsHaveDefaults) {
+      const emptyCall: CompletionItem = {
+        label: `[empty]`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Call with all default values: (${funcName})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call using all default parameter values.\n\nAll parameters have defaults: ${params.map(p => `${p.name} = ${p.defaultValue}`).join(', ')}`
+        },
+        sortText: '06-empty',
+        insertText: '',
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(emptyCall);
+    }
+    
+    // 7. Add placeholder pattern with underscores for defaults
+    if (optionalParams.length > 0 && requiredParams.length > 0) {
+      // Create a pattern with _ for defaults and placeholders for required
+      const placeholderItems = params.map((p, i) => {
+        if (p.defaultValue) {
+          return '_';
+        } else {
+          const placeholder = p.type || 'value'; 
+          return `\${${i+1}:${placeholder}}`;
+        }
+      });
+      
+      // Only add if we have at least one underscore
+      if (placeholderItems.some(item => item === '_')) {
+        const placeholderSnippet = placeholderItems.join(' ');
+        const placeholderCall: CompletionItem = {
+          label: `[placeholder]`,
+          kind: CompletionItemKind.Snippet,
+          detail: `Call with placeholders: (${funcName} ${placeholderItems.join(' ')})`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Function call using underscores for default parameters.\n\nUnderscore \`_\` indicates parameters that will use their default values.`
+          },
+          sortText: '07-placeholder',
+          insertText: placeholderSnippet,
+          insertTextFormat: InsertTextFormat.Snippet
+        };
+        completions.push(placeholderCall);
+      }
+    }
+    
+    // 8. Special patterns for one required parameter with defaults
+    if (requiredParams.length === 1 && optionalParams.length > 0) {
+      // Mixed pattern: first parameter positional, other parameters named
+      const firstParam = requiredParams[0];
+      const firstParamPlaceholder = firstParam.type || 'value';
+      const mixedSnippets = optionalParams.map((p, i) => {
+        const placeholder = p.type || 'value';
+        return `${p.name}: \${${i+2}:${placeholder}}`;
+      });
+      
+      const mixedPattern = `\${1:${firstParamPlaceholder}} ${mixedSnippets.join(' ')}`;
+      const mixedCall: CompletionItem = {
+        label: `[mixed style]`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Call with mixed style: (${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call with mixed style: first parameter positional, others named.\n\nSignature: \`(${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+        },
+        sortText: '08-mixed',
+        insertText: mixedPattern,
+        insertTextFormat: InsertTextFormat.Snippet
+      };
+      completions.push(mixedCall);
+    }
+    
+    // 9. Add special Boolean type completions if parameter is Boolean
+    params.forEach(param => {
+      if (param.type && (param.type.toLowerCase() === 'bool' || param.type.toLowerCase() === 'boolean')) {
+        // Only add direct boolean completions for parameters that would be valid on their own
+        // Either all params have defaults, or this is the only required parameter
+        if (allParamsHaveDefaults || 
+            (requiredParams.length === 1 && 
+             requiredParams[0].name === param.name && 
+             optionalParams.length > 0)) {
+          
+          // Add true/false direct completions for boolean parameters
+          const trueCompletion: CompletionItem = {
+            label: `${param.name}: true`,
+            kind: CompletionItemKind.Value,
+            detail: `Set ${param.name} to true`,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: `Set boolean parameter \`${param.name}\` to \`true\``
+            },
+            sortText: `20-${param.name}-true`,
+            insertText: `${param.name}: true`,
+            insertTextFormat: InsertTextFormat.Snippet
+          };
+          
+          const falseCompletion: CompletionItem = {
+            label: `${param.name}: false`,
+            kind: CompletionItemKind.Value,
+            detail: `Set ${param.name} to false`,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: `Set boolean parameter \`${param.name}\` to \`false\``
+            },
+            sortText: `21-${param.name}-false`,
+            insertText: `${param.name}: false`,
+            insertTextFormat: InsertTextFormat.Snippet
+          };
+          
+          completions.push(trueCompletion, falseCompletion);
+        }
+      }
+    });
+    
+    return completions;
   }
   
   /**
@@ -1316,153 +1649,429 @@ export class CompletionProvider {
     position: Position,
     word: string
   ): CompletionItem[] {
-    // Create a set of keywords that we already have template support for
-    const templateKeywords = new Set([
-      'fn', 'fx', 'if', 'let', 'var', 'cond', 'when', 'unless', 'do', 
-      'lambda', 'loop', 'for', 'while', 'repeat', 'class', 'enum',
-      'import', 'export', 'defmacro', 'vector', 'if-let', 'set', 'object', 'map'
-    ]);
+    const completions: CompletionItem[] = [];
     
-    // Get defined symbols in this document
     const symbols = this.symbolManager.getDocumentSymbols(document.uri);
     
-    // Map symbols to completion items
-    return symbols
-      .filter(symbol => 
-        // Only include symbols that match the current word prefix if provided
-        (!word || symbol.name.startsWith(word)) &&
-        // Don't include any template keywords we already handle
-        !templateKeywords.has(symbol.name)
-      )
-      .map(symbol => {
-      const kind = this.getCompletionKindForSymbol(symbol.kind);
-      let detail = '';
-      let documentation = '';
-      let data = symbol.data;
-      let sortText: string | undefined = undefined;
-      let insertText: string | undefined = undefined;
-      let insertTextFormat: InsertTextFormat | undefined = undefined;
-      
-      // Set details based on symbol kind
-      switch (symbol.kind) {
-        case 12: // Function
-        case 6:  // Method
-          detail = `Function${symbol.data?.params ? ' with parameters' : ''}`;
-          documentation = symbol.data?.documentation || '';
-          data = symbol.data;
-          
-          // Create proper function call expansion with placeholders
-          if (symbol.data?.params && symbol.data.params.length > 0) {
-            // Format for functions with named parameters
-            // Support both positional and named parameter styles
-            
-            // First, offer named parameter style with placeholders 
-            const paramSnippets = symbol.data.params
-              .map((p, i) => `${p.name}: \${${i + 1}:${p.type || 'Any'}}`)
-              .join(' ');
-            
-            insertText = `(${symbol.name} ${paramSnippets})`;
-            insertTextFormat = InsertTextFormat.Snippet;
-            sortText = `2-${symbol.name}`; // High priority
-            
-            // We'll offer positional style in a separate completion item below
-          } else {
-            // Function with no params, still add parentheses
-            insertText = `(${symbol.name} \${1})`;
-            insertTextFormat = InsertTextFormat.Snippet;
-            sortText = `2-${symbol.name}`;
-          }
-          break;
-          
-        case 13: // Variable
-          detail = 'Variable';
-          documentation = symbol.data?.documentation || '';
-          sortText = `5-${symbol.name}`;
-          break;
-          
-        case 5: // Class
-          detail = 'Class';
-          documentation = symbol.data?.documentation || '';
-          sortText = `6-${symbol.name}`;
-            // Always provide a proper constructor call with class
-            insertText = `(new ${symbol.name} \${1})`;
-            insertTextFormat = InsertTextFormat.Snippet;
-          break;
-          
-        case 10: // Enum
-          detail = 'Enumeration';
-          documentation = symbol.data?.documentation || '';
-          sortText = `6-${symbol.name}`;
-          break;
-          
-        case 11: // EnumMember
-          detail = `Enum Case${symbol.data?.enumName ? ` of ${symbol.data.enumName}` : ''}`;
-          documentation = symbol.data?.documentation || '';
-          sortText = `4-${symbol.name}`;
-          break;
-          
-        default:
-          sortText = `7-${symbol.name}`;
-            
-            // For keywords that aren't in our template list but might be functions,
-            // always provide a reasonable callable snippet
-            if (this.isLikelyFunction(symbol.name)) {
-              insertText = `(${symbol.name} \${1})`;
-              insertTextFormat = InsertTextFormat.Snippet;
-              detail = 'Function call';
-            }
+    for (const symbol of symbols) {
+      // Filter out symbols that don't match the current word prefix
+      if (word && !symbol.name.toLowerCase().startsWith(word.toLowerCase())) {
+        continue;
       }
       
+      // Get completion kind based on symbol kind
+      const kind = this.getCompletionKindForSymbol(symbol.kind);
+      
+      // Skip enum members when suggesting at top level
+      // (they should be suggested via dot notation)
+      if (symbol.kind === 11 && symbol.name.includes('.')) {
+        continue;
+      }
+      
+      // Create documentation
+      let documentation = '';
+      if (symbol.data?.documentation) {
+        documentation = symbol.data.documentation;
+      }
+      
+      // Create detail string
+      let detail = '';
+      if (symbol.kind === 12 || symbol.kind === 6) { // Function or Method
+        // Build parameter details for functions and methods
+        if (symbol.data?.params) {
+          const params = symbol.data.params.map(p => 
+            p.defaultValue 
+              ? `${p.name}: ${p.type} = ${p.defaultValue}` 
+              : `${p.name}: ${p.type}`
+          ).join(' ');
+          
+          detail = `(${symbol.name} ${params})`;
+          if (symbol.data.returnType) {
+            detail += ` -> ${symbol.data.returnType}`;
+          }
+        }
+      } else if (symbol.kind === 13) { // Variable
+        if (symbol.data?.type) {
+          detail = `${symbol.name}: ${symbol.data.type}`;
+        } else {
+          detail = symbol.name;
+        }
+      } else if (symbol.kind === 10) { // Enum
+        detail = `enum ${symbol.name}`;
+      } else if (symbol.kind === 5) { // Class
+        detail = `class ${symbol.name}`;
+      } else {
+        detail = symbol.name;
+      }
+      
+      // For functions (fn/fx), generate multiple calling pattern completions
+      if (symbol.kind === 12 || symbol.kind === 6) { // Function or Method
+        // Generate function call patterns
+        const functionCompletions = this.generateFunctionCallCompletions(symbol);
+        if (functionCompletions.length > 0) {
+          completions.push(...functionCompletions);
+          continue; // Skip the default completion for this function
+        }
+      }
+      
+      // Create the default completion item for non-function symbols
       const completionItem: CompletionItem = {
         label: symbol.name,
-        kind,
-        detail,
-        ...(sortText ? { sortText } : {}),
-        ...(insertText ? { insertText } : {}),
-        ...(insertTextFormat ? { insertTextFormat } : {}),
-        documentation: {
+        kind: kind,
+        detail: detail,
+        documentation: documentation ? {
           kind: MarkupKind.Markdown,
           value: documentation
-        },
-        data
+        } : undefined,
+        data: {
+          ...symbol.data,
+          uri: document.uri,
+          name: symbol.name
+        }
       };
       
-      // If this is a function with parameters, also add a positional style completion
-      if (symbol.kind === 12 && symbol.data?.params && symbol.data.params.length > 0) {
-        // We'll return both this item and add a separate one for positional style
-        const positionalParams = symbol.data.params.length;
-        let posInsertText: string;
-        
-        if (positionalParams <= 3) {
-          // For small number of params, create placeholders for each
-          const paramPlaceholders = Array.from({length: positionalParams}, (_, i) => `\${${i + 1}}`).join(' ');
-          posInsertText = `(${symbol.name} ${paramPlaceholders})`;
-        } else {
-          // For more params, just create one placeholder to make it less overwhelming
-          posInsertText = `(${symbol.name} \${1})`;
-        }
-        
-        const positionalItem: CompletionItem = {
-          label: `${symbol.name} (positional)`,
-          kind,
-          detail: `${detail} (positional style)`,
-          sortText: `2p-${symbol.name}`, // Slightly lower priority than named params
-          insertText: posInsertText,
-          insertTextFormat: InsertTextFormat.Snippet,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: documentation
-          },
-          data
-        };
-        
-        // Only return the regular item here, we'll add the positional one separately
-        return [completionItem, positionalItem];
+      // Add sort text to control sorting
+      switch (symbol.kind) {
+        case 12: // Function
+          completionItem.sortText = `20-${symbol.name}`;
+          break;
+        case 6: // Method
+          completionItem.sortText = `21-${symbol.name}`;
+          break;
+        case 5: // Class
+          completionItem.sortText = `30-${symbol.name}`;
+          break;
+        case 10: // Enum
+          completionItem.sortText = `40-${symbol.name}`;
+          break;
+        case 13: // Variable
+          completionItem.sortText = `50-${symbol.name}`;
+          break;
+        default:
+          completionItem.sortText = `90-${symbol.name}`;
       }
       
-      return [completionItem];
-    })
-    .flat(); // Flatten because some items might return arrays
+      completions.push(completionItem);
+    }
+    
+    return completions;
+  }
+  
+  /**
+   * Generate multiple function call pattern completions for a function symbol
+   */
+  private generateFunctionCallCompletions(symbol: ExtendedSymbolInformation): CompletionItem[] {
+    const completions: CompletionItem[] = [];
+    const funcName = symbol.name;
+    
+    // Skip if no parameter data
+    if (!symbol.data?.params) {
+      // Add basic completion with empty parentheses
+      completions.push({
+        label: funcName,
+        kind: CompletionItemKind.Function,
+        detail: `Function: ${funcName}`,
+        documentation: symbol.data?.documentation ? {
+          kind: MarkupKind.Markdown,
+          value: symbol.data.documentation
+        } : undefined,
+        insertText: `(${funcName} \${0})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `01-${funcName}`
+      });
+      return completions;
+    }
+    
+    const params = symbol.data.params;
+    const returnType = symbol.data.returnType || 'Any';
+    const isFx = symbol.data?.isFx || false;
+    
+    // Check which parameters are required vs optional (have default values)
+    const requiredParams = params.filter(p => !p.defaultValue);
+    const optionalParams = params.filter(p => p.defaultValue);
+    const allParamsHaveDefaults = requiredParams.length === 0 && optionalParams.length > 0;
+    
+    // 1. Basic function name completion (most common)
+    const basicCompletion: CompletionItem = {
+      label: funcName,
+      kind: CompletionItemKind.Function,
+      detail: `${isFx ? 'Pure function' : 'Function'}: (${funcName} ${params.map(p => 
+        p.defaultValue 
+          ? `${p.name}: ${p.type || 'Any'} = ${p.defaultValue}` 
+          : `${p.name}: ${p.type || 'Any'}`
+      ).join(' ')})${returnType ? ` -> ${returnType}` : ''}`,
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: symbol.data?.documentation || `Function \`${funcName}\``
+      },
+      insertText: `(${funcName} \${0})`,
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: `01-${funcName}`,
+      data: {
+        isFx,
+        returnType
+      }
+    };
+    completions.push(basicCompletion);
+    
+    // 2. Full function call with positional arguments (all parameters)
+    if (params.length > 0) {
+      const positionalSnippet = params.map((p, i) => `\${${i+1}:${p.type || 'value'}}`).join(' ');
+      const positionalCall: CompletionItem = {
+        label: `${funcName} (positional params)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `(${funcName} ${params.map(p => p.type || 'Any').join(' ')})${returnType ? ` -> ${returnType}` : ''}`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with all parameters in positional style.\n\nSignature: \`(${funcName} ${params.map(p => p.type || 'Any').join(' ')})\``
+        },
+        insertText: `(${funcName} ${positionalSnippet})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `02-${funcName}`,
+        data: {
+          isFx,
+          returnType,
+          style: 'positional'
+        }
+      };
+      completions.push(positionalCall);
+    }
+    
+    // 3. Full function call with named arguments (all parameters)
+    if (params.length > 0) {
+      const namedSnippet = params.map((p, i) => `${p.name}: \${${i+1}:${p.type || 'value'}}`).join(' ');
+      const namedCall: CompletionItem = {
+        label: `${funcName} (named params)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `(${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with all parameters in named style.\n\nSignature: \`(${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+        },
+        insertText: `(${funcName} ${namedSnippet})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `03-${funcName}`,
+        data: {
+          isFx,
+          returnType,
+          style: 'named'
+        }
+      };
+      completions.push(namedCall);
+    }
+    
+    // 4. Named parameters in alternate order (if there are multiple parameters)
+    if (params.length > 1) {
+      const reversedParams = [...params].reverse();
+      const reversedNamedSnippet = reversedParams.map((p, i) => 
+        `${p.name}: \${${reversedParams.length-i}:${p.type || 'value'}}`
+      ).join(' ');
+      
+      const reversedNamedCall: CompletionItem = {
+        label: `${funcName} (named params - alt order)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `(${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call with named parameters in alternate order.\n\nSignature: \`(${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+        },
+        insertText: `(${funcName} ${reversedNamedSnippet})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `04-${funcName}`,
+        data: {
+          isFx,
+          returnType,
+          style: 'named-reverse'
+        }
+      };
+      completions.push(reversedNamedCall);
+    }
+    
+    // 5. If some parameters have defaults, add call patterns with just required parameters
+    if (requiredParams.length > 0 && optionalParams.length > 0) {
+      // Positional style (required only)
+      const requiredPositionalSnippet = requiredParams.map((p, i) => `\${${i+1}:${p.type || 'value'}}`).join(' ');
+      const requiredPositionalCall: CompletionItem = {
+        label: `${funcName} (required only)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `(${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call with only required parameters in positional style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})\``
+        },
+        insertText: `(${funcName} ${requiredPositionalSnippet})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `05-${funcName}`,
+        data: {
+          isFx,
+          returnType,
+          style: 'positional-required'
+        }
+      };
+      completions.push(requiredPositionalCall);
+      
+      // Named style (required only)
+      if (requiredParams.length > 0) {
+        const requiredNamedSnippet = requiredParams.map((p, i) => `${p.name}: \${${i+1}:${p.type || 'value'}}`).join(' ');
+        const requiredNamedCall: CompletionItem = {
+          label: `${funcName} (required named)`,
+          kind: CompletionItemKind.Snippet,
+          detail: `(${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Function call with only required parameters in named style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+          },
+          insertText: `(${funcName} ${requiredNamedSnippet})`,
+          insertTextFormat: InsertTextFormat.Snippet,
+          sortText: `06-${funcName}`,
+          data: {
+            isFx,
+            returnType,
+            style: 'named-required'
+          }
+        };
+        completions.push(requiredNamedCall);
+      }
+    }
+    
+    // 6. If all parameters have defaults, add empty call pattern
+    if (allParamsHaveDefaults) {
+      const emptyCall: CompletionItem = {
+        label: `${funcName} (empty call)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `(${funcName})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call using all default parameter values.\n\nAll parameters have defaults: ${params.map(p => `${p.name} = ${p.defaultValue}`).join(', ')}`
+        },
+        insertText: `(${funcName})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `07-${funcName}`,
+        data: {
+          isFx,
+          returnType,
+          style: 'empty'
+        }
+      };
+      completions.push(emptyCall);
+    }
+    
+    // 7. Individual named parameter completions - ONLY VALID ONES BASED ON CONTEXT
+    if (allParamsHaveDefaults) {
+      // If all params have defaults, any individual named parameter is valid
+      params.forEach((param, index) => {
+        const paramCompletion: CompletionItem = {
+          label: `${funcName} - ${param.name}:`,
+          kind: CompletionItemKind.Property,
+          detail: `Parameter: ${param.type || 'Any'}${param.defaultValue ? ` = ${param.defaultValue}` : ''}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Named parameter for \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
+          },
+          insertText: `(${funcName} ${param.name}: \${1:${param.type || 'value'}})`,
+          insertTextFormat: InsertTextFormat.Snippet,
+          sortText: `20-${funcName}-${param.name}`,
+          data: {
+            isFx,
+            returnType,
+            paramName: param.name,
+            paramType: param.type,
+            style: 'named-param'
+          }
+        };
+        completions.push(paramCompletion);
+      });
+    } else if (requiredParams.length === 1 && optionalParams.length > 0) {
+      // Special case: only one required parameter and some optional ones
+      // In this case, we can offer the required parameter as a named parameter
+      const param = requiredParams[0];
+      const paramCompletion: CompletionItem = {
+        label: `${funcName} - ${param.name}:`,
+        kind: CompletionItemKind.Property,
+        detail: `Required parameter: ${param.type || 'Any'}`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Required named parameter for \`${funcName}\``
+        },
+        insertText: `(${funcName} ${param.name}: \${1:${param.type || 'value'}})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `15-${funcName}-${param.name}`,
+        data: {
+          isFx,
+          returnType,
+          paramName: param.name,
+          paramType: param.type,
+          style: 'named-param-required'
+        }
+      };
+      completions.push(paramCompletion);
+    }
+    
+    // 8. Add placeholder pattern with underscores for defaults
+    if (optionalParams.length > 0 && requiredParams.length > 0) {
+      // Create a pattern with _ for defaults and placeholders for required
+      const placeholderItems = params.map((p, i) => {
+        if (p.defaultValue) {
+          return '_';
+        } else {
+          return `\${${i+1}:${p.type || 'value'}}`;
+        }
+      });
+      
+      // Only add if we have at least one underscore
+      if (placeholderItems.some(item => item === '_')) {
+        const placeholderSnippet = placeholderItems.join(' ');
+        const placeholderCall: CompletionItem = {
+          label: `${funcName} (placeholder)`,
+          kind: CompletionItemKind.Snippet,
+          detail: `(${funcName} ${placeholderItems.join(' ')})`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Function call using underscores for default parameters.\n\nUnderscore \`_\` indicates parameters that will use their default values.`
+          },
+          sortText: `08-${funcName}`,
+          insertText: `(${funcName} ${placeholderSnippet})`,
+          insertTextFormat: InsertTextFormat.Snippet,
+          data: {
+            isFx,
+            returnType,
+            style: 'placeholder'
+          }
+        };
+        completions.push(placeholderCall);
+      }
+    }
+    
+    // 9. Special patterns for one required parameter with defaults
+    if (requiredParams.length === 1 && optionalParams.length > 0) {
+      // Mixed pattern: first parameter positional, other parameters named
+      const firstParam = requiredParams[0];
+      const mixedSnippets = optionalParams.map((p, i) => 
+        `${p.name}: \${${i+2}:${p.type || 'value'}}`
+      );
+      
+      const mixedPattern = `\${1:${firstParam.type || 'value'}} ${mixedSnippets.join(' ')}`;
+      const mixedCall: CompletionItem = {
+        label: `${funcName} (mixed style)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `(${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Function call with mixed style: first parameter positional, others named.\n\nSignature: \`(${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
+        },
+        insertText: `(${funcName} ${mixedPattern})`,
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: `09-${funcName}`,
+        data: {
+          isFx,
+          returnType,
+          style: 'mixed'
+        }
+      };
+      completions.push(mixedCall);
+    }
+    
+    return completions;
   }
   
   /**
@@ -1866,511 +2475,130 @@ export class CompletionProvider {
         label: 'loop-recur',
         kind: CompletionItemKind.Snippet,
         detail: 'Loop with recur',
-        insertText: '(loop (${1:var1} ${2:init1} ${3:var2} ${4:init2})\n  (if ${5:exit-condition}\n    ${6:result}\n    (recur ${7:next1} ${0:next2})))',
+        insertText: 'recur ${0:values}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-loop',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates a loop with recursive binding'
+          value: 'Recur back to the loop with new values'
         }
       });
     }
     
-    if ('for'.startsWith(word)) {
+    if ('console.log'.startsWith(word)) {
       completions.push({
-        label: 'for-loop',
+        label: 'String concatenation',
         kind: CompletionItemKind.Snippet,
-        detail: 'For loop',
-        insertText: '(for (${1:i} from: ${2:0} to: ${3:10} by: ${4:1})\n  ${0:body})',
+        detail: 'Insert string formatting',
+        insertText: '"${1:message}: " ${0:value}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-for',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates a for loop with named parameters'
+          value: 'Format values for printing with a label'
         }
       });
     }
     
-    if ('while'.startsWith(word)) {
+    if ('fn'.startsWith(word)) {
       completions.push({
-        label: 'while-loop',
+        label: 'param-with-type',
         kind: CompletionItemKind.Snippet,
-        detail: 'While loop',
-        insertText: '(while ${1:condition}\n  ${0:body})',
+        detail: 'Parameter with type annotation',
+        insertText: '${1:name}: ${0:Type}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-while',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates a while loop'
-        }
-      });
-    }
-    
-    if ('repeat'.startsWith(word)) {
-      completions.push({
-        label: 'repeat-loop',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Repeat loop',
-        insertText: '(repeat ${1:count}\n  ${0:body})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-repeat',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Repeats a body a specific number of times'
-        }
-      });
-    }
-    
-    if ('class'.startsWith(word)) {
-      completions.push({
-        label: 'class-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Class definition',
-        insertText: '(class ${1:ClassName}\n  ;; Class fields\n  (var ${2:field1})\n  (let ${3:constField} ${4:value})\n\n  ;; Constructor\n  (constructor (${5:params})\n    ${6:constructorBody})\n\n  ;; Methods\n  (fn ${7:methodName} (${8:params})\n    ${0:methodBody}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-class',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a class with fields, constructor, and methods'
-        }
-      });
-
-      completions.push({
-        label: 'class-with-inheritance',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Class with inheritance',
-        insertText: '(class ${1:ClassName} extends ${2:ParentClass}\n  ;; Class fields\n  (var ${3:field1})\n\n  ;; Constructor\n  (constructor (${4:params})\n    (super ${5:parentParams})\n    ${6:constructorBody})\n\n  ;; Methods\n  (fn ${7:methodName} (${8:params})\n    ${0:methodBody}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-class-extends',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a class that extends a parent class'
-        }
-      });
-    }
-
-    if ('struct'.startsWith(word)) {
-      completions.push({
-        label: 'struct-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Struct definition',
-        insertText: '(struct ${1:StructName}\n  (field ${2:field1}: ${3:Type1})\n  (field ${4:field2}: ${0:Type2}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-struct',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a struct with typed fields'
-        }
-      });
-    }
-
-    if ('field'.startsWith(word)) {
-      completions.push({
-        label: 'field-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Struct field',
-        insertText: '(field ${1:name}: ${0:Type})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-field',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Defines a field in a struct with type annotation'
-        }
-      });
-    }
-
-    if ('constructor'.startsWith(word)) {
-      completions.push({
-        label: 'constructor-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Class constructor',
-        insertText: '(constructor (${1:params})\n  ${0:body})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-constructor',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Defines a constructor for a class'
-        }
-      });
-
-      completions.push({
-        label: 'constructor-with-super',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Constructor with super call',
-        insertText: '(constructor (${1:params})\n  (super ${2:parentParams})\n  ${0:body})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-constructor-super',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Defines a constructor that calls the parent constructor'
-        }
-      });
-    }
-    
-    if ('super'.startsWith(word)) {
-      completions.push({
-        label: 'super-call',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Super constructor call',
-        insertText: '(super ${0:params})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-super',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Calls the parent class constructor'
-        }
-      });
-    }
-    
-    if ('import'.startsWith(word)) {
-      completions.push({
-        label: 'import-symbols',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Import symbols',
-        insertText: '(import [${1:symbol1}, ${2:symbol2}] from "${0:path}")',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-import',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Imports specific symbols from a module'
+          value: 'Add a parameter with type annotation'
         }
       });
       
       completions.push({
-        label: 'import-alias',
+        label: 'param-with-default',
         kind: CompletionItemKind.Snippet,
-        detail: 'Import with alias',
-        insertText: '(import [${1:symbol} as ${2:alias}] from "${0:path}")',
+        detail: 'Parameter with default value',
+        insertText: '${1:name}: ${2:Type} = ${0:defaultValue}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-import-as',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Imports a symbol with an alias'
+          value: 'Add a parameter with type and default value'
         }
       });
       
       completions.push({
-        label: 'import-ns',
+        label: 'return-type',
         kind: CompletionItemKind.Snippet,
-        detail: 'Import namespace',
-        insertText: '(import ${1:namespace} from "${0:path}")',
+        detail: 'Function return type',
+        insertText: '(-> ${0:ReturnType})',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-import-namespace',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Imports a module as a namespace'
-        }
-      });
-    }
-    
-    if ('export'.startsWith(word)) {
-      completions.push({
-        label: 'export-symbols',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Export symbols',
-        insertText: '(export [${1:symbol1}, ${0:symbol2}])',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-export',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Exports multiple symbols'
+          value: 'Specify the function return type'
         }
       });
       
       completions.push({
-        label: 'export-named',
+        label: 'enum-param',
         kind: CompletionItemKind.Snippet,
-        detail: 'Export with name',
-        insertText: '(export "${1:name}" ${0:value})',
+        detail: 'Enum type parameter',
+        insertText: '${1:paramName}: ${0:EnumType}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-export-named',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Exports a value with a specific name'
+          value: 'Parameter with enum type annotation'
         }
       });
     }
     
-    if ('defmacro'.startsWith(word)) {
+    if ('fx'.startsWith(word)) {
       completions.push({
-        label: 'defmacro-def',
+        label: 'param-with-type',
         kind: CompletionItemKind.Snippet,
-        detail: 'Define macro',
-        insertText: '(defmacro ${1:name} (${2:params})\n  `(${0:body}))',
+        detail: 'Parameter with type annotation',
+        insertText: '${1:name}: ${0:Type}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-defmacro',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Defines a compile-time macro'
-        }
-      });
-    }
-    
-    if ('vector'.startsWith(word) || 'vector-fn'.startsWith(word)) {
-      completions.push({
-        label: 'vector-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Vector/array literal',
-        insertText: '[${1:item1}, ${2:item2}, ${0:item3}]',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-vector',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a vector/array literal'
-        }
-      });
-      
-      // This is a case where we might have a function with same name as a keyword
-      completions.push({
-        label: 'vector-fn',
-        kind: CompletionItemKind.Snippet, 
-        detail: 'Vector Creation',
-        insertText: '(vector ${1:item1} ${2:item2} ${0:item3})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-vector-fn',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a vector using the vector function'
-        }
-      });
-    }
-    
-    if ('object'.startsWith(word) || 'map'.startsWith(word)) {
-      completions.push({
-        label: 'object-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Object/map literal',
-        insertText: '{"${1:key1}": ${2:value1}, "${3:key2}": ${0:value2}}',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-object',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates an object/map literal'
-        }
-      });
-    }
-    
-    if ('set'.startsWith(word)) {
-      completions.push({
-        label: 'set-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Set literal',
-        insertText: '#[${1:item1}, ${2:item2}, ${0:item3}]',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-set',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a set literal'
-        }
-      });
-    }
-    
-    if ('if-let'.startsWith(word)) {
-      completions.push({
-        label: 'if-let-binding',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Conditional binding',
-        insertText: '(if-let (${1:name} ${2:value})\n  ${3:then-expr}\n  ${0:else-expr})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-if-let',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Binds a value if truthy and executes a branch'
-        }
-      });
-    }
-    
-    if ('protocol'.startsWith(word)) {
-      completions.push({
-        label: 'protocol-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Protocol definition',
-        insertText: '(protocol ${1:ProtocolName}\n  (fn ${2:methodName} (${3:params}): ${0:ReturnType}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-protocol',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Defines a protocol with method signatures'
-        }
-      });
-    }
-
-    if ('interface'.startsWith(word)) {
-      completions.push({
-        label: 'interface-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Interface definition',
-        insertText: '(interface ${1:InterfaceName}\n  (fn ${2:methodName} (${3:params}): ${0:ReturnType}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-interface',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Defines an interface with method signatures'
-        }
-      });
-    }
-
-    if ('match'.startsWith(word)) {
-      completions.push({
-        label: 'match-pattern',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Pattern matching',
-        insertText: '(match ${1:expression}\n  (${2:pattern1} ${3:result1})\n  (${4:pattern2} ${5:result2})\n  (${0:_} ${6:defaultResult}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-match',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Pattern matching expression with multiple cases'
-        }
-      });
-    }
-
-    if ('defmacro'.startsWith(word)) {
-      completions.push({
-        label: 'defmacro-def',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Macro definition',
-        insertText: '(defmacro ${1:macroName} (${2:params})\n  ${0:body})',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-defmacro',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Defines a compile-time macro'
+          value: 'Add a parameter with type annotation'
         }
       });
       
       completions.push({
-        label: 'defmacro-with-syntax',
+        label: 'param-with-default',
         kind: CompletionItemKind.Snippet,
-        detail: 'Macro with syntax rules',
-        insertText: '(defmacro ${1:macroName} (${2:params})\n  (syntax-rules ()\n    ((${3:pattern}) ${0:expansion})))',
+        detail: 'Parameter with default value',
+        insertText: '${1:name}: ${2:Type} = ${0:defaultValue}',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-defmacro-syntax',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Defines a macro with pattern-based syntax rules'
-        }
-      });
-    }
-    
-    if ('quasiquote'.startsWith(word)) {
-      completions.push({
-        label: 'quasiquote-expr',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Quasiquote expression',
-        insertText: '(quasiquote\n  (${1:template} ~(${0:unquote})))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-quasiquote',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Quasiquote with unquote for macro templates'
-        }
-      });
-    }
-    
-    if ('loop'.startsWith(word)) {
-      completions.push({
-        label: 'loop-recur',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Loop with recursion',
-        insertText: '(loop [${1:var1} ${2:init1}\n      ${3:var2} ${4:init2}]\n  (if ${5:condition}\n    (recur ${6:next1} ${7:next2})\n    ${0:result}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-loop',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Tail-recursive loop with named variables'
-        }
-      });
-    }
-    
-    if ('pipeline'.startsWith(word) || 'pipe'.startsWith(word)) {
-      completions.push({
-        label: 'pipeline',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Data pipeline',
-        insertText: '(->> ${1:initialValue}\n  (${2:function1} ${3:arg1})\n  (${4:function2})\n  (${0:function3}))',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-pipeline',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Thread-last pipeline operator for data transformation'
-        }
-      });
-    }
-    
-    // Add data structure literals
-    if ('vector'.startsWith(word) || '['.startsWith(word) || 'array'.startsWith(word)) {
-      completions.push({
-        label: 'vector-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Vector/Array literal',
-        insertText: '[${1:item1} ${2:item2} ${0:item3}]',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-vector',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a vector/array literal. Example: [1 2 3]'
-        }
-      });
-    }
-    
-    if ('map'.startsWith(word) || '{'.startsWith(word) || 'object'.startsWith(word)) {
-      completions.push({
-        label: 'map-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Map/Object literal',
-        insertText: '{${1:key1} ${2:value1}, ${3:key2} ${0:value2}}',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-map',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a map/object literal. Example: {name "John", age 30}'
+          value: 'Add a parameter with type and default value'
         }
       });
       
       completions.push({
-        label: 'map-kv-literal',
+        label: 'return-type',
         kind: CompletionItemKind.Snippet,
-        detail: 'Map with key-value syntax',
-        insertText: '{:${1:key1} ${2:value1}, :${3:key2} ${0:value2}}',
+        detail: 'Function return type',
+        insertText: '(-> ${0:ReturnType})',
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-map-kv',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates a map with keyword syntax. Example: {:name "John", :age 30}'
+          value: 'Specify the function return type'
+        }
+      });
+      
+      completions.push({
+        label: 'enum-param',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Enum type parameter',
+        insertText: '${1:paramName}: ${0:EnumType}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Parameter with enum type annotation'
         }
       });
     }
     
-    if ('set'.startsWith(word) || '#'.startsWith(word)) {
-      completions.push({
-        label: 'set-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Set literal',
-        insertText: '#{${1:item1} ${2:item2} ${0:item3}}',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-set',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Creates a set literal. Example: #{1 2 3}'
-        }
-      });
-    }
-    
-    if ('list'.startsWith(word) || "'(".startsWith(word)) {
-      completions.push({
-        label: 'list-literal',
-        kind: CompletionItemKind.Snippet,
-        detail: 'List literal',
-        insertText: "'(${1:item1} ${2:item2} ${0:item3})",
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-list',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: "Creates a list literal. Example: '(1 2 3)"
-        }
-      });
-    }
+    // Add more function-specific completions as needed
     
     return completions;
   }
@@ -2384,7 +2612,7 @@ export class CompletionProvider {
     currentLine: string,
     fullText: string
   ): CompletionItem[] {
-    // Special case for empty import with no symbol: (import from ".|")
+    // Special case for empty import with no symbol and just a dot: (import from ".|")
     const emptyImportDotMatch = linePrefix.match(/import\s+from\s+(['"])(\.*)(["']?)$/);
     if (emptyImportDotMatch) {
       const [_, quoteType, dotPrefix, endQuote] = emptyImportDotMatch;
@@ -2428,10 +2656,39 @@ export class CompletionProvider {
         }];
       }
     }
-
+    
+    // Special case for import with empty symbol and empty quotations: (import from "")
+    const emptyQuoteMatch = linePrefix.match(/import\s+from\s+(['"])$/);
+    if (emptyQuoteMatch) {
+      return [
+        {
+          label: './',
+          kind: CompletionItemKind.Folder,
+          detail: 'Current directory',
+          insertText: './',
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          }
+        },
+        {
+          label: '../',
+          kind: CompletionItemKind.Folder,
+          detail: 'Parent directory',
+          insertText: '../',
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          }
+        }
+      ];
+    }
+    
     // Match when a directory has been selected from autocompletion
     // This specifically handles cases after selecting a directory from completion
-    const directorySelectedMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*\/)(["']?)$/);
+    const directorySelectedMatch = linePrefix.match(/import(?:\s+\[[^\]]*\]|\s+[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+(['"])([^'"]*\/)(["']?)$/);
     if (directorySelectedMatch) {
       const [_, quoteType, directoryPath] = directorySelectedMatch;
       
@@ -2441,9 +2698,9 @@ export class CompletionProvider {
       
       const completions = this.getRelativePathCompletionItems(documentDir, directoryPath);
       
-      // Ensure items have a trigger for the next autocompletion
+      // Ensure all items have a trigger for the next autocompletion
       return completions.map(item => {
-        if (item.kind === CompletionItemKind.Folder) {
+        if (item.kind === CompletionItemKind.Folder && !item.command) {
           item.command = {
             title: 'Trigger Suggestion',
             command: 'editor.action.triggerSuggest'
@@ -2454,7 +2711,7 @@ export class CompletionProvider {
     }
     
     // Special case for import paths ending with a slash
-    // This captures when a user just typed a slash after a directory name in an import path
+    // This specifically handles cases after selecting a directory from completion
     const importPathMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?\/)(["']?)$/);
     if (importPathMatch) {
       const [_, quoteType, directoryPath, endQuote] = importPathMatch;
@@ -2905,10 +3162,14 @@ export class CompletionProvider {
       if (classMethods.length > 0) {
         return classMethods.map(method => {
           const methodName = method.name.split('.')[1];
+          const fullMethodName = method.name; // className.methodName
+          
           return {
             label: methodName,
             kind: CompletionItemKind.Method,
             detail: `Method of ${className}`,
+            insertText: methodName,
+            insertTextFormat: InsertTextFormat.PlainText,
             sortText: `10-${methodName}`,
             data: method.data
           };
@@ -2917,78 +3178,6 @@ export class CompletionProvider {
     }
     
     return [];
-  }
-  
-  /**
-   * Get file system completion items for a path
-   */
-  private getPathCompletionItems(
-    partialPath: string,
-    isImport: boolean
-  ): CompletionItem[] {
-    const completionItems: CompletionItem[] = [];
-    
-    if (!this.workspaceFolders || this.workspaceFolders.length === 0) {
-      return completionItems;
-    }
-    
-    try {
-      // Get workspace root folder
-      const workspaceRoot = this.workspaceFolders[0].uri.replace('file://', '');
-      
-      // Determine base directory for the search
-      let basePath = workspaceRoot;
-      let searchPath = partialPath;
-      
-      // If partial path contains a directory part, use it as base
-      const lastSlashIndex = partialPath.lastIndexOf('/');
-      if (lastSlashIndex >= 0) {
-        basePath = path.join(basePath, partialPath.substring(0, lastSlashIndex));
-        searchPath = partialPath.substring(lastSlashIndex + 1);
-      }
-      
-      // Read the directory
-      const entries = fs.readdirSync(basePath, { withFileTypes: true });
-      
-      // Filter entries that match the search path
-      for (const entry of entries) {
-        // Skip hidden files unless explicitly looking for them
-        if (entry.name.startsWith('.') && !searchPath.startsWith('.')) {
-          continue;
-        }
-        
-        // Skip node_modules
-        if (entry.name === 'node_modules') {
-          continue;
-        }
-        
-        // Check if entry matches search prefix
-        if (searchPath === '' || entry.name.startsWith(searchPath)) {
-          const entryPath = lastSlashIndex >= 0 
-            ? `${partialPath.substring(0, lastSlashIndex + 1)}${entry.name}`
-            : entry.name;
-            
-          const isDir = entry.isDirectory();
-          const completionItem: CompletionItem = {
-            label: entry.name,
-            kind: isDir ? CompletionItemKind.Folder : CompletionItemKind.File,
-            detail: isDir ? 'Directory' : 'File',
-            insertText: isDir ? `${entry.name}/` : entry.name,
-            sortText: isDir ? `0-${entry.name}` : `1-${entry.name}`, // Sort directories first
-            command: isDir ? {
-              title: 'Trigger Suggestion',
-              command: 'editor.action.triggerSuggest'
-            } : undefined
-          };
-          
-          completionItems.push(completionItem);
-        }
-      }
-    } catch (error) {
-      console.error(`Error getting path completions: ${error}`);
-    }
-    
-    return completionItems;
   }
   
   /**
@@ -3396,7 +3585,7 @@ export class CompletionProvider {
       { name: 'console.debug', kind: CompletionItemKind.Function, detail: 'Log debug to console' },
       
       // Math functions
-      { name: 'Math.abs', kind: CompletionItemKind.Function, detail: 'Absolute value' },
+      { name: 'Math.abs', kind: CompletionItemKind.Function, detail: 'Absolute value of a number' },
       { name: 'Math.min', kind: CompletionItemKind.Function, detail: 'Minimum of values' },
       { name: 'Math.max', kind: CompletionItemKind.Function, detail: 'Maximum of values' },
       { name: 'Math.floor', kind: CompletionItemKind.Function, detail: 'Round down to nearest integer' },
@@ -3435,22 +3624,52 @@ export class CompletionProvider {
       { name: 'map', kind: CompletionItemKind.Function, detail: 'Create a map {key1 val1, key2 val2}' }
     ];
     
+    // Define the type for the standard library items to help TypeScript
+    type StdLibItem = {
+      name: string;
+      kind: CompletionItemKind;
+      detail: string;
+    };
+    
     // Filter by prefix if provided
     const filtered = stdLibItems.filter(item => 
       !prefix || item.name.toLowerCase().includes(prefix.toLowerCase())
     );
     
     // Convert to completion items
-    return filtered.map(item => ({
-      label: item.name,
-      kind: item.kind,
-      detail: item.detail,
-      documentation: {
-        kind: MarkupKind.Markdown,
-        value: `\`${item.name}\` - ${item.detail}`
-      },
-      sortText: `01-${item.name}` // High priority for standard library items
-    }));
+    return filtered.map((item: StdLibItem) => {
+      // For function/method items, provide them with parentheses for LISP syntax
+      if (item.kind === CompletionItemKind.Function) {
+        return {
+          label: item.name,
+          kind: item.kind,
+          detail: item.detail,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `\`${item.name}\` - ${item.detail}`
+          },
+          // Add parentheses and position cursor for argument
+          insertText: `(${item.name} \${0})`,
+          insertTextFormat: InsertTextFormat.Snippet,
+          sortText: `01-${item.name}` // High priority for standard library items
+        };
+      } else {
+        // For keywords and other types
+        return {
+          label: item.name,
+          kind: item.kind,
+          detail: item.detail,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `\`${item.name}\` - ${item.detail}`
+          },
+          // Keywords typically start expressions and may need parens based on context
+          insertText: item.kind === CompletionItemKind.Keyword ? `(${item.name} \${0})` : item.name,
+          insertTextFormat: item.kind === CompletionItemKind.Keyword ? InsertTextFormat.Snippet : InsertTextFormat.PlainText,
+          sortText: `01-${item.name}` // High priority for standard library items
+        };
+      }
+    });
   }
 
   /**
@@ -3544,16 +3763,38 @@ export class CompletionProvider {
       const members = jsObjects[objectName];
       
       // Convert to completion items
-      return members.map(member => ({
-        label: member.name,
-        kind: member.kind,
-        detail: `${objectName}.${member.name} - ${member.detail}`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `\`${objectName}.${member.name}\`\n\n${member.detail}`
-        },
-        sortText: `10-${member.name}`
-      }));
+      return members.map(member => {
+        const fullMethodName = `${objectName}.${member.name}`;
+        
+        if (member.kind === CompletionItemKind.Method) {
+          // For methods, add LISP-style parentheses
+          return {
+            label: member.name,
+            kind: member.kind,
+            detail: `${fullMethodName} - ${member.detail}`,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: `\`${fullMethodName}\`\n\n${member.detail}`
+            },
+            insertText: `(${fullMethodName} \${0})`,
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: `10-${member.name}`
+          };
+        } else {
+          // For properties and constants
+          return {
+            label: member.name,
+            kind: member.kind,
+            detail: `${fullMethodName} - ${member.detail}`,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: `\`${fullMethodName}\`\n\n${member.detail}`
+            },
+            insertText: fullMethodName,
+            sortText: `10-${member.name}`
+          };
+        }
+      });
     }
     
     return [];
@@ -3564,6 +3805,27 @@ export class CompletionProvider {
  * Setup a completion item for display
  */
 export function setupCompletionItem(completionItem: CompletionItem): CompletionItem {
-  // Add additional setup as needed
+  // Fix for enum case autocompletion
+  if (completionItem.kind === CompletionItemKind.EnumMember) {
+    const data = completionItem.data;
+    if (data && data.enumName) {
+      // Check if we already have full name (e.g., "OS.macOS") or just the case name (e.g., "macOS")
+      if (!completionItem.label.includes('.') && !completionItem.insertText?.startsWith('.')) {
+        completionItem.detail = `Case of enum ${data.enumName}`;
+      }
+    }
+  }
+  
+  // Fix for function parameter completion
+  if (completionItem.kind === CompletionItemKind.Property && 
+      completionItem.label.endsWith(':') && 
+      completionItem.insertText?.endsWith('${1:') &&
+      completionItem.insertTextFormat === InsertTextFormat.Snippet) {
+    
+    // Simplify insertion to just leave cursor after the colon
+    completionItem.insertText = completionItem.insertText.replace(/\$\{1:.*?\}/, '');
+    completionItem.insertTextFormat = InsertTextFormat.PlainText;
+  }
+  
   return completionItem;
 }
