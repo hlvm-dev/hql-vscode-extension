@@ -26,9 +26,7 @@ import { SymbolManager, ExtendedSymbolInformation } from './symbolManager';
 export class CompletionProvider {
   private symbolManager: SymbolManager;
   private workspaceFolders: { uri: string }[] | null = null;
-  // Cache for dynamic values
   private dynamicValueCache: Map<string, CompletionItem[]> = new Map();
-  // When this was last updated
   private lastCacheUpdate: number = 0;
 
   constructor(symbolManager: SymbolManager) {
@@ -68,12 +66,11 @@ export class CompletionProvider {
         end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
       });
 
-      // Special case for import 'from' followed by dot
-      const importFromDotMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+([\.]+)$/);
+      // Special case for import 'from' followed by dot, even when no symbol is between import and from
+      // This matches both: (import from ".") and (import [sym] from ".")
+      const importFromDotMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])(\.*)(["']?)$/);
       if (importFromDotMatch) {
-        console.log("Import from followed by dot detected");
-        const dotPrefix = importFromDotMatch[1];
-        
+        const [_, quoteType, dotPrefix, endQuote] = importFromDotMatch;
         // Handle different dot patterns
         if (dotPrefix === '.') {
           return [
@@ -81,7 +78,7 @@ export class CompletionProvider {
               label: './',
               kind: CompletionItemKind.Folder,
               detail: 'Current directory',
-              insertText: '"./"',
+              insertText: './'.substring(dotPrefix.length),
               insertTextFormat: InsertTextFormat.PlainText,
               command: {
                 title: 'Trigger Suggestion',
@@ -92,7 +89,7 @@ export class CompletionProvider {
               label: '../',
               kind: CompletionItemKind.Folder,
               detail: 'Parent directory',
-              insertText: '"../"',
+              insertText: '../'.substring(dotPrefix.length),
               insertTextFormat: InsertTextFormat.PlainText,
               command: {
                 title: 'Trigger Suggestion',
@@ -101,26 +98,53 @@ export class CompletionProvider {
             }
           ];
         } else if (dotPrefix === '..') {
-          return [
-            {
-              label: '../',
-              kind: CompletionItemKind.Folder,
-              detail: 'Parent directory',
-              insertText: '"../"',
-              insertTextFormat: InsertTextFormat.PlainText,
-              command: {
-                title: 'Trigger Suggestion',
-                command: 'editor.action.triggerSuggest'
-              }
+          return [{
+            label: '../',
+            kind: CompletionItemKind.Folder,
+            detail: 'Parent directory',
+            insertText: '../'.substring(dotPrefix.length),
+            insertTextFormat: InsertTextFormat.PlainText,
+            command: {
+              title: 'Trigger Suggestion',
+              command: 'editor.action.triggerSuggest'
             }
-          ];
+          }];
         }
       }
       
+      // Special case for import with empty quotations: from ""
+      const emptyQuoteMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])$/);
+      if (emptyQuoteMatch) {
+        return [
+          {
+            label: './',
+            kind: CompletionItemKind.Folder,
+            detail: 'Current directory',
+            insertText: './',
+            insertTextFormat: InsertTextFormat.PlainText,
+            command: {
+              title: 'Trigger Suggestion',
+              command: 'editor.action.triggerSuggest'
+            }
+          },
+          {
+            label: '../',
+            kind: CompletionItemKind.Folder,
+            detail: 'Parent directory',
+            insertText: '../',
+            insertTextFormat: InsertTextFormat.PlainText,
+            command: {
+              title: 'Trigger Suggestion',
+              command: 'editor.action.triggerSuggest'
+            }
+          }
+        ];
+      }
+      
       // Special case for import paths ending with a slash
-      const importPathMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+(['"])([^'"]*?\/)(["']?)$/);
+      // This specifically handles cases after selecting a directory from completion
+      const importPathMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?\/)(["']?)$/);
       if (importPathMatch) {
-        console.log("Import path with directory slash detected");
         const [_, quoteType, directoryPath, endQuote] = importPathMatch;
         
         // If the current line still has the ending quote, remove it from our path
@@ -134,11 +158,22 @@ export class CompletionProvider {
         return this.getRelativePathCompletionItems(documentDir, cleanPath);
       }
       
+      // Detect when a directory has just been selected from autocomplete
+      // This handles the case when the user selects a directory that gets inserted with trailing slash
+      const recentlySelectedDirMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?\/(?:[^\/'"]+)\/)(["']?)$/);
+      if (recentlySelectedDirMatch) {
+        const [_, quoteType, directoryPath, endQuote] = recentlySelectedDirMatch;
+        
+        // Provide path completions inside this directory
+        const documentPath = document.uri.replace('file://', '');
+        const documentDir = path.dirname(documentPath);
+        return this.getRelativePathCompletionItems(documentDir, directoryPath);
+      }
+      
       // Special case for paths that just had a slash added - trigger completion without needing to remove/retype
       // This captures when a user just typed a slash after a directory name in an import path
-      const recentlyAddedSlashMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+(['"])([^'"]*?)(\/)$/);
+      const recentlyAddedSlashMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?)(\/)$/);
       if (recentlyAddedSlashMatch) {
-        console.log("Recently added slash in import path detected");
         const [_, quoteType, dirPath, slash] = recentlyAddedSlashMatch;
         const fullPath = dirPath + slash;
         
@@ -150,13 +185,68 @@ export class CompletionProvider {
         return this.getRelativePathCompletionItems(documentDir, fullPath);
       }
       
-      // Check for function call context first: (functionName |
+      // Check for enum values in type context: (install os: |)
+      const paramWithTypeMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s*$/);
+      if (paramWithTypeMatch) {
+        // Find the function and parameter name to get type context
+        const funcParamMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
+        if (funcParamMatch) {
+          const [_, funcName, paramName] = funcParamMatch;
+          // Get completions for this typed parameter
+          const enumCompletions = this.getParameterEnumValueCompletions(document, funcName, paramName);
+          if (enumCompletions.length > 0) {
+            return enumCompletions;
+          }
+        }
+      }
+      
+      // Check for enum dot notation shorthand: (= .|) or (install os: .|)
+      const enumDotMatch = linePrefix.match(/\S+\s+\.$/);
+      if (enumDotMatch) {
+        // Check if it's in parameter context for an enum type
+        const paramContextMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
+        if (paramContextMatch) {
+          const paramName = paramContextMatch[1];
+          // Find parameter type for full context
+          const functionMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+/);
+          if (functionMatch) {
+            const funcName = functionMatch[1];
+            const enumCompletions = this.getParameterEnumValueCompletions(document, funcName, paramName, true);
+            if (enumCompletions.length > 0) {
+              return enumCompletions;
+            }
+          }
+        }
+        
+        // Generic enum case completions if specific context not found
+        return this.getAllEnumCaseCompletions(document);
+      }
+      
+      // Check for function call context: (functionName |
       const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s*$/);
       if (funcCallMatch) {
         const functionName = funcCallMatch[1];
         const paramCompletions = this.getParameterCompletions(document, functionName);
         if (paramCompletions.length > 0) {
           return paramCompletions;
+        }
+      }
+      
+      // Check for named parameter in function call: (functionName param: |
+      const namedParamMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s*$/);
+      if (namedParamMatch) {
+        // Extract function and parameter name to provide type-specific completions
+        const funcParamParts = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
+        if (funcParamParts) {
+          const [_, funcName, paramName] = funcParamParts;
+          // Check if we should return enum values first
+          const enumCompletions = this.getParameterEnumValueCompletions(document, funcName, paramName);
+          if (enumCompletions.length > 0) {
+            return enumCompletions;
+          }
+          
+          // Otherwise fall back to regular parameter value completions
+          return this.getParameterValueCompletions(document, funcName, paramName);
         }
       }
       
@@ -175,7 +265,7 @@ export class CompletionProvider {
         return this.handleExportCompletions(document, linePrefix, fullText);
       }
       
-      // Check for enum value completions
+      // Check for enum value completions with dot notation
       if (linePrefix.includes('.')) {
         const dotCompletions = this.handleEnumDotCompletions(document, position);
         if (dotCompletions.length > 0) {
@@ -200,6 +290,15 @@ export class CompletionProvider {
         this.getDocumentSymbolCompletions(document, position, word)
       );
       
+      // Check for function context - add corresponding templates
+      const enclosingFunction = this.findEnclosingFunction(document, position);
+      if (enclosingFunction) {
+        const functionSpecificCompletions = this.getFunctionSpecificCompletions(enclosingFunction.name);
+        if (functionSpecificCompletions.length > 0) {
+          completions = completions.concat(functionSpecificCompletions);
+        }
+      }
+      
       // Add template completions
       completions = completions.concat(
         this.getTemplateCompletions(word)
@@ -220,6 +319,47 @@ export class CompletionProvider {
     }
   }
   
+    /**
+   * Get enum value completions for a parameter that expects an enum type
+   */
+    private getParameterEnumValueCompletions(
+      document: TextDocument,
+      functionName: string,
+      paramName: string,
+      shorthandDotNotation: boolean = false
+    ): CompletionItem[] {
+      // Find the function in document symbols
+      const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+      const functionSymbol = symbols.find(s => 
+        (s.kind === 12 || s.kind === 6) && // Function or Method
+        s.name === functionName
+      );
+      
+      // If we can't find the function or it has no parameters, return empty
+      if (!functionSymbol || !functionSymbol.data?.params) {
+        return [];
+      }
+      
+      // Find the specific parameter
+      const param = functionSymbol.data.params.find(p => p.name === paramName);
+      if (!param || !param.type) {
+        return [];
+      }
+      
+      // Check if parameter is an enum type
+      const enumType = symbols.find(s => 
+        s.kind === 10 && // Enum
+        s.name === param.type
+      );
+      
+      if (enumType) {
+        // Return enum case completions
+        return this.getEnumValueCompletions(document, param.type, shorthandDotNotation);
+      }
+      
+      return [];
+    }
+    
   /**
    * Extract the current word from text up to the cursor position
    */
@@ -255,6 +395,102 @@ export class CompletionProvider {
     }
     
     return Array.from(uniqueMap.values());
+  }
+  
+  /**
+   * Provides completions for parameter values, particularly for enum types
+   */
+  private getParameterValueCompletions(
+    document: TextDocument,
+    functionName: string,
+    paramName: string
+  ): CompletionItem[] {
+    // Find the function in document symbols
+    const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+    const functionSymbol = symbols.find(s => 
+      (s.kind === 12 || s.kind === 6) && // Function or Method
+      s.name === functionName
+    );
+    
+    // If we can't find the function or it has no parameters, return empty
+    if (!functionSymbol || !functionSymbol.data?.params) {
+      return [];
+    }
+    
+    // Find the specific parameter
+    const param = functionSymbol.data.params.find(p => p.name === paramName);
+    if (!param || !param.type) {
+      return [];
+    }
+    
+    // Check if parameter is an enum type
+    const enumType = symbols.find(s => 
+      s.kind === 10 && // Enum
+      s.name === param.type
+    );
+    
+    if (enumType) {
+      // Return enum case completions
+      return this.getEnumValueCompletions(document, param.type);
+    }
+    
+    // For other types, provide type-specific completions
+    switch (param.type.toLowerCase()) {
+      case 'bool':
+      case 'boolean':
+        return [
+          {
+            label: 'true',
+            kind: CompletionItemKind.Value,
+            detail: 'Boolean true value',
+            sortText: '01-true'
+          },
+          {
+            label: 'false',
+            kind: CompletionItemKind.Value,
+            detail: 'Boolean false value',
+            sortText: '01-false'
+          }
+        ];
+        
+      case 'string':
+        return [
+          {
+            label: '""',
+            kind: CompletionItemKind.Value,
+            detail: 'Empty string',
+            insertText: '""',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-string'
+          },
+          {
+            label: '"${1:text}"',
+            kind: CompletionItemKind.Snippet,
+            detail: 'String with placeholder',
+            insertText: '"${1:text}"',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '02-string-placeholder'
+          }
+        ];
+        
+      case 'int':
+      case 'float':
+      case 'number':
+        // For numeric types, we could suggest common values but for now keep it simple
+        if (param.defaultValue) {
+          return [{
+            label: param.defaultValue,
+            kind: CompletionItemKind.Value,
+            detail: `Default value for ${paramName}`,
+            sortText: '01-default'
+          }];
+        }
+        return [];
+        
+      default:
+        // For other types, no specific completion
+        return [];
+    }
   }
   
   /**
@@ -330,6 +566,7 @@ export class CompletionProvider {
     return [];
   }
   
+  
   /**
    * Get all enum case completions from all enum types in the document
    * Useful for shorthand dot notation where type isn't explicitly known
@@ -375,6 +612,7 @@ export class CompletionProvider {
     return allEnumCases;
   }
   
+  
   /**
    * Update cache of dynamic values from document
    */
@@ -417,18 +655,25 @@ export class CompletionProvider {
         );
         
         if (enumCases.length > 0) {
-          const enumCompletions = enumCases.map(enumCase => ({
-            label: enumCase.name,
-            kind: CompletionItemKind.EnumMember,
-            detail: `Case of enum ${enumName}`,
-            documentation: {
-              kind: MarkupKind.Markdown,
-              value: enumCase.data?.documentation || `Enum case from \`${enumName}\``
-            },
-            data: {
-              enumName: enumName
-            }
-          }));
+          const enumCompletions = enumCases.map(enumCase => {
+            // Extract just the case name without the enum prefix
+            const caseName = enumCase.name.includes('.') 
+              ? enumCase.name.split('.')[1] 
+              : enumCase.name;
+            
+            return {
+              label: caseName,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Case of enum ${enumName}`,
+              documentation: {
+                kind: MarkupKind.Markdown,
+                value: enumCase.data?.documentation || `Enum case from \`${enumName}\``
+              },
+              data: {
+                enumName: enumName
+              }
+            };
+          });
           
           // Cache these completions for the enum type
           this.dynamicValueCache.set(`enum:${enumName}`, enumCompletions);
@@ -488,11 +733,28 @@ export class CompletionProvider {
   /**
    * Get completion items for enum values based on type
    */
-  private getEnumValueCompletions(document: TextDocument, enumType: string): CompletionItem[] {
+  private getEnumValueCompletions(
+    document: TextDocument, 
+    enumType: string, 
+    shorthandDotNotation: boolean = false
+  ): CompletionItem[] {
     // Check if we have cached values for this enum
     const cachedItems = this.dynamicValueCache.get(`enum:${enumType}`);
     if (cachedItems) {
-      return cachedItems;
+      return cachedItems.map(item => {
+        // Clone the item so we don't modify the cached version
+        const newItem = { ...item };
+        
+        // For shorthand dot notation, we don't need the dot prefix
+        if (!shorthandDotNotation) {
+          newItem.label = item.label;
+          newItem.insertText = item.insertText || item.label;
+        }
+        
+        // High priority sorting for enum values
+        newItem.sortText = `00-${item.label}`;
+        return newItem;
+      });
     }
     
     // If not in cache, look through document symbols
@@ -530,7 +792,7 @@ export class CompletionProvider {
             value: enumMember.data?.documentation || `Enum case from \`${enumType}\``
           },
           insertText: caseName,
-          sortText: `0-${caseName}`, // Sort enum cases to the top
+          sortText: `00-${caseName}`, // High priority for enum values
           data: {
             enumName: enumType,
             fullName: `${enumType}.${caseName}`
@@ -574,7 +836,7 @@ export class CompletionProvider {
                         value: `Enum case from \`${enumType}\``
                       },
                       insertText: caseName.name,
-                      sortText: `0-${caseName.name}`,
+                      sortText: `00-${caseName.name}`,
                       data: {
                         enumName: enumType,
                         fullName: `${enumType}.${caseName.name}`
@@ -611,18 +873,31 @@ export class CompletionProvider {
     );
     
     if (functionSymbol && functionSymbol.data?.params) {
-      return functionSymbol.data.params.map(param => ({
-        label: param.name,
-        kind: CompletionItemKind.Variable,
-        detail: `Parameter: ${param.type || 'Any'}`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Parameter for function \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
-        },
-        insertText: `${param.name}: \${1:${param.type || 'Any'}}`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `0-${param.name}` // Sort parameters to the top
-      }));
+      return functionSymbol.data.params.map(param => {
+        // Create base completion item
+        const item: CompletionItem = {
+          label: param.name,
+          kind: CompletionItemKind.Variable,
+          detail: `Parameter: ${param.type || 'Any'}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Parameter for function \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
+          },
+          sortText: `0-${param.name}` // Sort parameters to the top
+        };
+        
+        // For a more standard implementation, use parameter name with colon
+        // This is more helpful for named parameter usage
+        if (param.type) {
+          item.insertText = `${param.name}: \${1:${param.type}}`;
+          item.insertTextFormat = InsertTextFormat.Snippet;
+        } else {
+          item.insertText = `${param.name}: \${1}`;
+          item.insertTextFormat = InsertTextFormat.Snippet;
+        }
+        
+        return item;
+      });
     }
     
     return [];
@@ -1061,7 +1336,10 @@ export class CompletionProvider {
           
           // Create proper function call expansion with placeholders
           if (symbol.data?.params && symbol.data.params.length > 0) {
-            // Format: (functionName param1: Type1 param2: Type2)
+            // Format for functions with named parameters
+            // Support both positional and named parameter styles
+            
+            // First, offer named parameter style with placeholders 
             const paramSnippets = symbol.data.params
               .map((p, i) => `${p.name}: \${${i + 1}:${p.type || 'Any'}}`)
               .join(' ');
@@ -1069,11 +1347,13 @@ export class CompletionProvider {
             insertText = `(${symbol.name} ${paramSnippets})`;
             insertTextFormat = InsertTextFormat.Snippet;
             sortText = `2-${symbol.name}`; // High priority
+            
+            // We'll offer positional style in a separate completion item below
           } else {
             // Function with no params, still add parentheses
             insertText = `(${symbol.name} \${1})`;
             insertTextFormat = InsertTextFormat.Snippet;
-              sortText = `2-${symbol.name}`;
+            sortText = `2-${symbol.name}`;
           }
           break;
           
@@ -1116,7 +1396,7 @@ export class CompletionProvider {
             }
       }
       
-      return {
+      const completionItem: CompletionItem = {
         label: symbol.name,
         kind,
         detail,
@@ -1129,7 +1409,43 @@ export class CompletionProvider {
         },
         data
       };
-    });
+      
+      // If this is a function with parameters, also add a positional style completion
+      if (symbol.kind === 12 && symbol.data?.params && symbol.data.params.length > 0) {
+        // We'll return both this item and add a separate one for positional style
+        const positionalParams = symbol.data.params.length;
+        let posInsertText: string;
+        
+        if (positionalParams <= 3) {
+          // For small number of params, create placeholders for each
+          const paramPlaceholders = Array.from({length: positionalParams}, (_, i) => `\${${i + 1}}`).join(' ');
+          posInsertText = `(${symbol.name} ${paramPlaceholders})`;
+        } else {
+          // For more params, just create one placeholder to make it less overwhelming
+          posInsertText = `(${symbol.name} \${1})`;
+        }
+        
+        const positionalItem: CompletionItem = {
+          label: `${symbol.name} (positional)`,
+          kind,
+          detail: `${detail} (positional style)`,
+          sortText: `2p-${symbol.name}`, // Slightly lower priority than named params
+          insertText: posInsertText,
+          insertTextFormat: InsertTextFormat.Snippet,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: documentation
+          },
+          data
+        };
+        
+        // Only return the regular item here, we'll add the positional one separately
+        return [completionItem, positionalItem];
+      }
+      
+      return [completionItem];
+    })
+    .flat(); // Flatten because some items might return arrays
   }
   
   /**
@@ -2424,7 +2740,11 @@ export class CompletionProvider {
             kind: isDir ? CompletionItemKind.Folder : CompletionItemKind.File,
             detail: isDir ? 'Directory' : 'File',
             insertText: isDir ? `${entry.name}/` : entry.name,
-            sortText: isDir ? `0-${entry.name}` : `1-${entry.name}` // Sort directories first
+            sortText: isDir ? `0-${entry.name}` : `1-${entry.name}`, // Sort directories first
+            command: isDir ? {
+              title: 'Trigger Suggestion',
+              command: 'editor.action.triggerSuggest'
+            } : undefined
           };
           
           completionItems.push(completionItem);
