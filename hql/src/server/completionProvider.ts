@@ -118,8 +118,11 @@ export class CompletionProvider {
       // Add document symbol completions
       const symbolCompletions = this.getDocumentSymbolCompletions(document, position, word);
       
+      // Get type-related completions
+      const typeCompletions = this.getTypeCompletions(word);
+      
       // Create a fully merged and deduplicated result
-      let results = this.mergeAndDeduplicate([...templateCompletions, ...symbolCompletions]);
+      let results = this.mergeAndDeduplicate([...templateCompletions, ...symbolCompletions, ...typeCompletions]);
       
       // Sort to ensure template snippets come first
       results.sort((a, b) => {
@@ -218,6 +221,16 @@ export class CompletionProvider {
           return this.getEnumValueCompletions(document, typeName);
         }
       }
+      
+      // Check for usage in equality expression (= .enumCase var)
+      // This is for when dot notation is used in equality expressions
+      const equalityMatch = currentLine.match(/\(\s*=\s+\.\s*$/);
+      if (equalityMatch) {
+        // Look back up to find the type of the variable being compared
+        // This is complex and might require looking at other lines
+        // For now, return all known enum cases as potential completions
+        return this.getAllEnumCaseCompletions(document);
+      }
     }
     
     // If no parameter type found, check if the identifier before dot is an enum type
@@ -237,7 +250,59 @@ export class CompletionProvider {
       }
     }
     
+    // Special handling for shorthand dot notation in typed contexts (.enumCase)
+    // If we're at the start of an argument list, suggest all enum cases
+    const startOfArg = linePrefix.match(/[\(,]\s*\.\s*$/);
+    if (startOfArg) {
+      return this.getAllEnumCaseCompletions(document);
+    }
+    
     return [];
+  }
+  
+  /**
+   * Get all enum case completions from all enum types in the document
+   * Useful for shorthand dot notation where type isn't explicitly known
+   */
+  private getAllEnumCaseCompletions(document: TextDocument): CompletionItem[] {
+    const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+    const allEnumCases: CompletionItem[] = [];
+    
+    // Find all enum types
+    const enumTypes = symbols.filter(s => s.kind === 10); // Enum type
+    
+    for (const enumType of enumTypes) {
+      const enumName = enumType.name;
+      const enumCases = symbols.filter(s => 
+        s.kind === 11 && // Enum member
+        s.data?.enumName === enumName
+      );
+      
+      for (const enumCase of enumCases) {
+        // Extract just the case name without the enum prefix
+        const caseName = enumCase.name.includes('.') 
+          ? enumCase.name.split('.')[1] 
+          : enumCase.name;
+          
+        allEnumCases.push({
+          label: caseName,
+          kind: CompletionItemKind.EnumMember,
+          detail: `Case of enum ${enumName}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: enumCase.data?.documentation || `Enum case from \`${enumName}\``
+          },
+          insertText: caseName,
+          sortText: `0-${caseName}`, // Sort enum cases to the top
+          data: {
+            enumName: enumName,
+            fullName: `${enumName}.${caseName}`
+          }
+        });
+      }
+    }
+    
+    return allEnumCases;
   }
   
   /**
@@ -569,14 +634,36 @@ export class CompletionProvider {
       case 'enum':
         return [
           {
-            label: 'case',
-            kind: CompletionItemKind.Keyword,
+            label: 'case-simple',
+            kind: CompletionItemKind.Snippet,
             detail: 'Enum case',
-            insertText: 'case ${1:CaseName}',
+            insertText: '(case ${1:CaseName})',
             insertTextFormat: InsertTextFormat.Snippet,
             documentation: {
               kind: MarkupKind.Markdown,
-              value: 'Define a case in an enumeration'
+              value: 'Define a simple case in an enumeration'
+            }
+          },
+          {
+            label: 'case-with-value',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Enum case with raw value',
+            insertText: '(case ${1:CaseName} ${2:value})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Define a case with raw value in an enumeration'
+            }
+          },
+          {
+            label: 'case-with-params',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Enum case with associated values',
+            insertText: '(case ${1:CaseName} ${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Define a case with associated values in an enumeration'
             }
           }
         ];
@@ -764,6 +851,56 @@ export class CompletionProvider {
           }
         ];
         
+      case 'fn':
+      case 'fx': 
+        // When inside a function definition, suggest parameter with type annotations
+        return [
+          {
+            label: 'param-with-type',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Parameter with type annotation',
+            insertText: '${1:name}: ${0:Type}',
+            insertTextFormat: InsertTextFormat.Snippet,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Add a parameter with type annotation'
+            }
+          },
+          {
+            label: 'param-with-default',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Parameter with default value',
+            insertText: '${1:name}: ${2:Type} = ${0:defaultValue}',
+            insertTextFormat: InsertTextFormat.Snippet,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Add a parameter with type and default value'
+            }
+          },
+          {
+            label: 'return-type',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Function return type',
+            insertText: '(-> ${0:ReturnType})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Specify the function return type'
+            }
+          },
+          {
+            label: 'enum-param',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Enum type parameter',
+            insertText: '${1:paramName}: ${0:EnumType}',
+            insertTextFormat: InsertTextFormat.Snippet,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Parameter with enum type annotation'
+            }
+          }
+        ];
+        
       // Add more function-specific completions as needed
       
       default:
@@ -836,69 +973,69 @@ export class CompletionProvider {
         !templateKeywords.has(symbol.name)
       )
       .map(symbol => {
-        const kind = this.getCompletionKindForSymbol(symbol.kind);
-        let detail = '';
-        let documentation = '';
-        let data = symbol.data;
-        let sortText: string | undefined = undefined;
-        let insertText: string | undefined = undefined;
-        let insertTextFormat: InsertTextFormat | undefined = undefined;
-        
-        // Set details based on symbol kind
-        switch (symbol.kind) {
-          case 12: // Function
-          case 6:  // Method
-            detail = `Function${symbol.data?.params ? ' with parameters' : ''}`;
-            documentation = symbol.data?.documentation || '';
-            data = symbol.data;
+      const kind = this.getCompletionKindForSymbol(symbol.kind);
+      let detail = '';
+      let documentation = '';
+      let data = symbol.data;
+      let sortText: string | undefined = undefined;
+      let insertText: string | undefined = undefined;
+      let insertTextFormat: InsertTextFormat | undefined = undefined;
+      
+      // Set details based on symbol kind
+      switch (symbol.kind) {
+        case 12: // Function
+        case 6:  // Method
+          detail = `Function${symbol.data?.params ? ' with parameters' : ''}`;
+          documentation = symbol.data?.documentation || '';
+          data = symbol.data;
+          
+          // Create proper function call expansion with placeholders
+          if (symbol.data?.params && symbol.data.params.length > 0) {
+            // Format: (functionName param1: Type1 param2: Type2)
+            const paramSnippets = symbol.data.params
+              .map((p, i) => `${p.name}: \${${i + 1}:${p.type || 'Any'}}`)
+              .join(' ');
             
-            // Create proper function call expansion with placeholders
-            if (symbol.data?.params && symbol.data.params.length > 0) {
-              // Format: (functionName param1: Type1 param2: Type2)
-              const paramSnippets = symbol.data.params
-                .map((p, i) => `${p.name}: \${${i + 1}:${p.type || 'Any'}}`)
-                .join(' ');
-              
-              insertText = `(${symbol.name} ${paramSnippets})`;
-              insertTextFormat = InsertTextFormat.Snippet;
-              sortText = `2-${symbol.name}`; // High priority
-            } else {
-              // Function with no params, still add parentheses
-              insertText = `(${symbol.name} \${1})`;
-              insertTextFormat = InsertTextFormat.Snippet;
+            insertText = `(${symbol.name} ${paramSnippets})`;
+            insertTextFormat = InsertTextFormat.Snippet;
+            sortText = `2-${symbol.name}`; // High priority
+          } else {
+            // Function with no params, still add parentheses
+            insertText = `(${symbol.name} \${1})`;
+            insertTextFormat = InsertTextFormat.Snippet;
               sortText = `2-${symbol.name}`;
-            }
-            break;
-            
-          case 13: // Variable
-            detail = 'Variable';
-            documentation = symbol.data?.documentation || '';
-            sortText = `5-${symbol.name}`;
-            break;
-            
-          case 5: // Class
-            detail = 'Class';
-            documentation = symbol.data?.documentation || '';
-            sortText = `6-${symbol.name}`;
+          }
+          break;
+          
+        case 13: // Variable
+          detail = 'Variable';
+          documentation = symbol.data?.documentation || '';
+          sortText = `5-${symbol.name}`;
+          break;
+          
+        case 5: // Class
+          detail = 'Class';
+          documentation = symbol.data?.documentation || '';
+          sortText = `6-${symbol.name}`;
             // Always provide a proper constructor call with class
             insertText = `(new ${symbol.name} \${1})`;
             insertTextFormat = InsertTextFormat.Snippet;
-            break;
-            
-          case 10: // Enum
-            detail = 'Enumeration';
-            documentation = symbol.data?.documentation || '';
-            sortText = `6-${symbol.name}`;
-            break;
-            
-          case 11: // EnumMember
-            detail = `Enum Case${symbol.data?.enumName ? ` of ${symbol.data.enumName}` : ''}`;
-            documentation = symbol.data?.documentation || '';
-            sortText = `4-${symbol.name}`;
-            break;
-            
-          default:
-            sortText = `7-${symbol.name}`;
+          break;
+          
+        case 10: // Enum
+          detail = 'Enumeration';
+          documentation = symbol.data?.documentation || '';
+          sortText = `6-${symbol.name}`;
+          break;
+          
+        case 11: // EnumMember
+          detail = `Enum Case${symbol.data?.enumName ? ` of ${symbol.data.enumName}` : ''}`;
+          documentation = symbol.data?.documentation || '';
+          sortText = `4-${symbol.name}`;
+          break;
+          
+        default:
+          sortText = `7-${symbol.name}`;
             
             // For keywords that aren't in our template list but might be functions,
             // always provide a reasonable callable snippet
@@ -907,22 +1044,22 @@ export class CompletionProvider {
               insertTextFormat = InsertTextFormat.Snippet;
               detail = 'Function call';
             }
-        }
-        
-        return {
-          label: symbol.name,
-          kind,
-          detail,
-          ...(sortText ? { sortText } : {}),
-          ...(insertText ? { insertText } : {}),
-          ...(insertTextFormat ? { insertTextFormat } : {}),
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: documentation
-          },
-          data
-        };
-      });
+      }
+      
+      return {
+        label: symbol.name,
+        kind,
+        detail,
+        ...(sortText ? { sortText } : {}),
+        ...(insertText ? { insertText } : {}),
+        ...(insertTextFormat ? { insertTextFormat } : {}),
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: documentation
+        },
+        data
+      };
+    });
   }
   
   /**
@@ -1064,7 +1201,74 @@ export class CompletionProvider {
         sortText: '01-enum',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Creates an enumeration type definition'
+          value: 'Creates a simple enumeration type definition without associated values'
+        }
+      });
+      
+      completions.push({
+        label: 'enum-with-rawvalue',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Enum with raw values',
+        insertText: '(enum ${1:Name}: ${2:Int}\n  (case ${3:Case1} ${4:1})\n  (case ${5:Case2} ${0:2}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-enum-raw',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an enumeration with associated raw values'
+        }
+      });
+      
+      completions.push({
+        label: 'enum-with-associated',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Enum with associated values',
+        insertText: '(enum ${1:Name}\n  (case ${2:Case1} ${3:param1}: ${4:Type1})\n  (case ${5:Case2} ${6:param2}: ${0:Type2}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-enum-associated',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an enumeration with associated values'
+        }
+      });
+    }
+    
+    if ('case'.startsWith(word)) {
+      completions.push({
+        label: 'case-simple',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Simple enum case',
+        insertText: '(case ${1:Name})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-case',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a simple enum case without values'
+        }
+      });
+      
+      completions.push({
+        label: 'case-rawvalue',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Enum case with raw value',
+        insertText: '(case ${1:Name} ${0:value})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-case-raw',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an enum case with a raw value'
+        }
+      });
+      
+      completions.push({
+        label: 'case-associated',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Enum case with associated values',
+        insertText: '(case ${1:Name} ${2:param1}: ${3:Type1} ${4:param2}: ${0:Type2})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-case-associated',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates an enum case with associated values'
         }
       });
     }
@@ -1260,6 +1464,92 @@ export class CompletionProvider {
           value: 'Creates a class with fields, constructor, and methods'
         }
       });
+
+      completions.push({
+        label: 'class-with-inheritance',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Class with inheritance',
+        insertText: '(class ${1:ClassName} extends ${2:ParentClass}\n  ;; Class fields\n  (var ${3:field1})\n\n  ;; Constructor\n  (constructor (${4:params})\n    (super ${5:parentParams})\n    ${6:constructorBody})\n\n  ;; Methods\n  (fn ${7:methodName} (${8:params})\n    ${0:methodBody}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-class-extends',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a class that extends a parent class'
+        }
+      });
+    }
+
+    if ('struct'.startsWith(word)) {
+      completions.push({
+        label: 'struct-def',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Struct definition',
+        insertText: '(struct ${1:StructName}\n  (field ${2:field1}: ${3:Type1})\n  (field ${4:field2}: ${0:Type2}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-struct',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a struct with typed fields'
+        }
+      });
+    }
+
+    if ('field'.startsWith(word)) {
+      completions.push({
+        label: 'field-def',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Struct field',
+        insertText: '(field ${1:name}: ${0:Type})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-field',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a field in a struct with type annotation'
+        }
+      });
+    }
+
+    if ('constructor'.startsWith(word)) {
+      completions.push({
+        label: 'constructor-def',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Class constructor',
+        insertText: '(constructor (${1:params})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-constructor',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a constructor for a class'
+        }
+      });
+
+      completions.push({
+        label: 'constructor-with-super',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Constructor with super call',
+        insertText: '(constructor (${1:params})\n  (super ${2:parentParams})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-constructor-super',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a constructor that calls the parent constructor'
+        }
+      });
+    }
+    
+    if ('super'.startsWith(word)) {
+      completions.push({
+        label: 'super-call',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Super constructor call',
+        insertText: '(super ${0:params})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-super',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Calls the parent class constructor'
+        }
+      });
     }
     
     if ('import'.startsWith(word)) {
@@ -1416,6 +1706,139 @@ export class CompletionProvider {
         documentation: {
           kind: MarkupKind.Markdown,
           value: 'Binds a value if truthy and executes a branch'
+        }
+      });
+    }
+    
+    if ('protocol'.startsWith(word)) {
+      completions.push({
+        label: 'protocol-def',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Protocol definition',
+        insertText: '(protocol ${1:ProtocolName}\n  (fn ${2:methodName} (${3:params}): ${0:ReturnType}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-protocol',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a protocol with method signatures'
+        }
+      });
+    }
+
+    if ('interface'.startsWith(word)) {
+      completions.push({
+        label: 'interface-def',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Interface definition',
+        insertText: '(interface ${1:InterfaceName}\n  (fn ${2:methodName} (${3:params}): ${0:ReturnType}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-interface',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines an interface with method signatures'
+        }
+      });
+    }
+
+    if ('implements'.startsWith(word)) {
+      completions.push({
+        label: 'implements-protocol',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Implements protocol',
+        insertText: 'implements ${0:ProtocolName}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-implements',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Specifies that a class implements a protocol'
+        }
+      });
+    }
+    
+    if ('match'.startsWith(word)) {
+      completions.push({
+        label: 'match-pattern',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Pattern matching',
+        insertText: '(match ${1:expression}\n  (${2:pattern1} ${3:result1})\n  (${4:pattern2} ${5:result2})\n  (${0:_} ${6:defaultResult}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-match',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Pattern matching expression with multiple cases'
+        }
+      });
+    }
+
+    if ('defmacro'.startsWith(word)) {
+      completions.push({
+        label: 'defmacro-def',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Macro definition',
+        insertText: '(defmacro ${1:macroName} (${2:params})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-defmacro',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a compile-time macro'
+        }
+      });
+      
+      completions.push({
+        label: 'defmacro-with-syntax',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Macro with syntax rules',
+        insertText: '(defmacro ${1:macroName} (${2:params})\n  (syntax-rules ()\n    ((${3:pattern}) ${0:expansion})))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-defmacro-syntax',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a macro with pattern-based syntax rules'
+        }
+      });
+    }
+    
+    if ('quasiquote'.startsWith(word)) {
+      completions.push({
+        label: 'quasiquote-expr',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Quasiquote expression',
+        insertText: '(quasiquote\n  (${1:template} ~(${0:unquote})))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-quasiquote',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Quasiquote with unquote for macro templates'
+        }
+      });
+    }
+    
+    if ('loop'.startsWith(word)) {
+      completions.push({
+        label: 'loop-recur',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Loop with recursion',
+        insertText: '(loop [${1:var1} ${2:init1}\n      ${3:var2} ${4:init2}]\n  (if ${5:condition}\n    (recur ${6:next1} ${7:next2})\n    ${0:result}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-loop',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Tail-recursive loop with named variables'
+        }
+      });
+    }
+    
+    if ('pipeline'.startsWith(word) || 'pipe'.startsWith(word)) {
+      completions.push({
+        label: 'pipeline',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Data pipeline',
+        insertText: '(->> ${1:initialValue}\n  (${2:function1} ${3:arg1})\n  (${4:function2})\n  (${0:function3}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-pipeline',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Thread-last pipeline operator for data transformation'
         }
       });
     }
@@ -1697,6 +2120,114 @@ export class CompletionProvider {
       name === 'println' ||
       name.startsWith('console.')
     );
+  }
+
+  private getTypeCompletions(word: string): CompletionItem[] {
+    const completions: CompletionItem[] = [];
+    
+    // Basic types
+    const types = [
+      { label: 'String', detail: 'String type', doc: 'String type for text values' },
+      { label: 'Number', detail: 'Number type', doc: 'Numeric type for integers and floats' },
+      { label: 'Boolean', detail: 'Boolean type', doc: 'Boolean type (true/false)' },
+      { label: 'Any', detail: 'Any type', doc: 'Dynamic type that can hold any value' },
+      { label: 'Void', detail: 'Void type', doc: 'Represents no value (for function returns)' },
+      { label: 'Nil', detail: 'Nil type', doc: 'Represents the absence of a value' },
+      { label: 'Date', detail: 'Date type', doc: 'Date and time representation' },
+      { label: 'RegExp', detail: 'RegExp type', doc: 'Regular expression type' },
+      { label: 'Error', detail: 'Error type', doc: 'Error type for exceptions' }
+    ];
+    
+    // Generic types
+    const genericTypes = [
+      { label: 'Array<${1:T}>', detail: 'Array type', doc: 'Generic array type' },
+      { label: 'Vector<${1:T}>', detail: 'Vector type', doc: 'Immutable vector type' },
+      { label: 'Set<${1:T}>', detail: 'Set type', doc: 'Set collection type' },
+      { label: 'Map<${1:K}, ${2:V}>', detail: 'Map type', doc: 'Key-value map type' },
+      { label: 'Optional<${1:T}>', detail: 'Optional type', doc: 'Value that might be null/nil' },
+      { label: 'Promise<${1:T}>', detail: 'Promise type', doc: 'Asynchronous promise type' },
+      { label: 'Result<${1:T}, ${2:E}>', detail: 'Result type', doc: 'Success or error result type' },
+      { label: 'Function<(${1:Args}) -> ${2:ReturnType}>', detail: 'Function type', doc: 'Function type signature' }
+    ];
+    
+    // Add basic types
+    for (const type of types) {
+      if (type.label.toLowerCase().startsWith(word.toLowerCase())) {
+        completions.push({
+          label: type.label,
+          kind: CompletionItemKind.TypeParameter,
+          detail: type.detail,
+          insertText: type.label,
+          sortText: `02-type-${type.label}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: type.doc
+          }
+        });
+      }
+    }
+    
+    // Add generic type patterns
+    for (const type of genericTypes) {
+      if (type.label.split('<')[0].toLowerCase().startsWith(word.toLowerCase())) {
+        completions.push({
+          label: type.label.split('<')[0],
+          kind: CompletionItemKind.TypeParameter,
+          detail: type.detail,
+          insertText: type.label,
+          insertTextFormat: InsertTextFormat.Snippet,
+          sortText: `02-generic-${type.label.split('<')[0]}`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: type.doc
+          }
+        });
+      }
+    }
+    
+    // Type annotation patterns
+    if ('type'.startsWith(word)) {
+      completions.push({
+        label: 'type-alias',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Type alias definition',
+        insertText: '(type ${1:AliasName} ${0:TargetType})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-type-alias',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a type alias'
+        }
+      });
+      
+      completions.push({
+        label: 'type-union',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Union type definition',
+        insertText: '(type ${1:UnionName} (union ${2:Type1} ${3:Type2} ${0:Type3}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-type-union',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines a union type'
+        }
+      });
+      
+      completions.push({
+        label: 'type-intersection',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Intersection type definition',
+        insertText: '(type ${1:IntersectionName} (intersection ${2:Type1} ${3:Type2} ${0:Type3}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-type-intersection',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Defines an intersection type'
+        }
+      });
+    }
+    
+    return completions;
   }
 }
 
