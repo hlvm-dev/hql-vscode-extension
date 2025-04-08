@@ -68,6 +68,88 @@ export class CompletionProvider {
         end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
       });
 
+      // Special case for import 'from' followed by dot
+      const importFromDotMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+([\.]+)$/);
+      if (importFromDotMatch) {
+        console.log("Import from followed by dot detected");
+        const dotPrefix = importFromDotMatch[1];
+        
+        // Handle different dot patterns
+        if (dotPrefix === '.') {
+          return [
+            {
+              label: './',
+              kind: CompletionItemKind.Folder,
+              detail: 'Current directory',
+              insertText: '"./"',
+              insertTextFormat: InsertTextFormat.PlainText,
+              command: {
+                title: 'Trigger Suggestion',
+                command: 'editor.action.triggerSuggest'
+              }
+            },
+            {
+              label: '../',
+              kind: CompletionItemKind.Folder,
+              detail: 'Parent directory',
+              insertText: '"../"',
+              insertTextFormat: InsertTextFormat.PlainText,
+              command: {
+                title: 'Trigger Suggestion',
+                command: 'editor.action.triggerSuggest'
+              }
+            }
+          ];
+        } else if (dotPrefix === '..') {
+          return [
+            {
+              label: '../',
+              kind: CompletionItemKind.Folder,
+              detail: 'Parent directory',
+              insertText: '"../"',
+              insertTextFormat: InsertTextFormat.PlainText,
+              command: {
+                title: 'Trigger Suggestion',
+                command: 'editor.action.triggerSuggest'
+              }
+            }
+          ];
+        }
+      }
+      
+      // Special case for import paths ending with a slash
+      const importPathMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+(['"])([^'"]*?\/)(["']?)$/);
+      if (importPathMatch) {
+        console.log("Import path with directory slash detected");
+        const [_, quoteType, directoryPath, endQuote] = importPathMatch;
+        
+        // If the current line still has the ending quote, remove it from our path
+        const cleanPath = directoryPath.endsWith(quoteType) 
+          ? directoryPath.substring(0, directoryPath.length - 1)
+          : directoryPath;
+          
+        // Provide path completions inside this directory
+        const documentPath = document.uri.replace('file://', '');
+        const documentDir = path.dirname(documentPath);
+        return this.getRelativePathCompletionItems(documentDir, cleanPath);
+      }
+      
+      // Special case for paths that just had a slash added - trigger completion without needing to remove/retype
+      // This captures when a user just typed a slash after a directory name in an import path
+      const recentlyAddedSlashMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+(['"])([^'"]*?)(\/)$/);
+      if (recentlyAddedSlashMatch) {
+        console.log("Recently added slash in import path detected");
+        const [_, quoteType, dirPath, slash] = recentlyAddedSlashMatch;
+        const fullPath = dirPath + slash;
+        
+        // Provide path completions for the directory
+        const documentPath = document.uri.replace('file://', '');
+        const documentDir = path.dirname(documentPath);
+        
+        // Get completions with the slash intact
+        return this.getRelativePathCompletionItems(documentDir, fullPath);
+      }
+      
       // Check for function call context first: (functionName |
       const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s*$/);
       if (funcCallMatch) {
@@ -1795,21 +1877,6 @@ export class CompletionProvider {
       });
     }
 
-    if ('implements'.startsWith(word)) {
-      completions.push({
-        label: 'implements-protocol',
-        kind: CompletionItemKind.Snippet,
-        detail: 'Implements protocol',
-        insertText: 'implements ${0:ProtocolName}',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '01-implements',
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: 'Specifies that a class implements a protocol'
-        }
-      });
-    }
-    
     if ('match'.startsWith(word)) {
       completions.push({
         label: 'match-pattern',
@@ -1957,8 +2024,11 @@ export class CompletionProvider {
     // Match 'from' keyword: (import [...] from
     const fromKeywordMatch = currentLine.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+$/);
     if (fromKeywordMatch) {
-      // The user has typed 'from', suggest quote
-      return [{
+      // The user has typed 'from', suggest quote, "./" and "../" options
+      const results = [];
+      
+      // Add double quote suggestion
+      results.push({
         label: '"',
         kind: CompletionItemKind.Operator,
         detail: 'Start path string',
@@ -1968,19 +2038,104 @@ export class CompletionProvider {
           title: 'Trigger Suggestion',
           command: 'editor.action.triggerSuggest'
         }
-      }];
+      });
+      
+      // Add ./ suggestion for current directory
+      results.push({
+        label: './',
+        kind: CompletionItemKind.Folder,
+        detail: 'Current directory',
+        insertText: '"./"',
+        insertTextFormat: InsertTextFormat.Snippet,
+        command: {
+          title: 'Trigger Suggestion',
+          command: 'editor.action.triggerSuggest'
+        }
+      });
+      
+      // Add ../ suggestion for parent directory
+      results.push({
+        label: '../',
+        kind: CompletionItemKind.Folder,
+        detail: 'Parent directory',
+        insertText: '"../"',
+        insertTextFormat: InsertTextFormat.Snippet,
+        command: {
+          title: 'Trigger Suggestion',
+          command: 'editor.action.triggerSuggest'
+        }
+      });
+      
+      return results;
+    }
+
+    // Match "from ." without quotes yet
+    const fromDotMatch = currentLine.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+([\.]+)$/);
+    if (fromDotMatch) {
+      const dotPrefix = fromDotMatch[1];
+      const results = [];
+      
+      if (dotPrefix === '.') {
+        // After typing just a dot, suggest "./" and "../"
+        results.push({
+          label: './',
+          kind: CompletionItemKind.Folder,
+          detail: 'Current directory',
+          insertText: '"./"',
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          }
+        });
+        
+        results.push({
+          label: '../',
+          kind: CompletionItemKind.Folder,
+          detail: 'Parent directory',
+          insertText: '"../"',
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          }
+        });
+      } else if (dotPrefix === '..') {
+        // After typing two dots, suggest "../"
+        results.push({
+          label: '../',
+          kind: CompletionItemKind.Folder,
+          detail: 'Parent directory',
+          insertText: '"../"',
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          }
+        });
+      }
+      
+      return results;
     }
     
     // Match paths after 'from': (import [...] from "path
-    const pathMatch = currentLine.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+["']([^"']*)$/);
+    // Use a more precise regex that handles both single and double quotes
+    const pathMatch = currentLine.match(/import\s+(?:\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*|\s*)?\s+from\s+(['"])([^'"]*?)$/);
     if (pathMatch) {
-      const partialPath = pathMatch[1] || '';
+      // Extract quote type and partial path
+      const [_, quoteType, partialPath] = pathMatch;
+      
+      console.log(`Import path with quote type ${quoteType}: "${partialPath}"`);
       
       // Provide path completions relative to current document
       const documentPath = document.uri.replace('file://', '');
       const documentDir = path.dirname(documentPath);
       
-      return this.getRelativePathCompletionItems(documentDir, partialPath);
+      // Get completions but preserve the quote type
+      const completions = this.getRelativePathCompletionItems(documentDir, partialPath);
+      
+      // Return completions with original quote preserved
+      return completions;
     }
     
     return [];

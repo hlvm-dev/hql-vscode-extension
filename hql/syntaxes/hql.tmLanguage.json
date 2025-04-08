@@ -257,11 +257,7 @@
           "beginCaptures": {
             "0": { "name": "keyword.control.hql" }
           },
-          "end": "\\]\\s+from\\s+([\"'])(.+?)\\1\\)",
-          "endCaptures": {
-            "0": { "name": "keyword.control.hql" },
-            "2": { "name": "string.quoted.hql" }
-          },
+          "end": "\\]",
           "patterns": [
             {
               "match": "([a-zA-Z][a-zA-Z0-9\\-_]*)\\s+as\\s+([a-zA-Z][a-zA-Z0-9\\-_]*)",
@@ -283,18 +279,22 @@
             "0": { "name": "keyword.control.hql" },
             "1": { "name": "variable.other.hql" }
           },
-          "end": "from\\s+([\"'])(.+?)\\1\\)",
-          "endCaptures": {
-            "0": { "name": "keyword.control.hql" },
-            "2": { "name": "string.quoted.hql" }
-          },
+          "end": "(?=\\s+from\\s+)",
           "patterns": [
             { "include": "$self" }
           ]
         },
         {
-          "match": "from",
+          "match": "\\bfrom\\b",
           "name": "keyword.control.hql"
+        },
+        {
+          "begin": "from\\s+([\"'])",
+          "beginCaptures": {
+            "0": { "name": "keyword.control.hql" }
+          },
+          "end": "\\1",
+          "contentName": "string.quoted.hql"
         }
       ]
     },
