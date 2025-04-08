@@ -255,7 +255,7 @@ export class CompletionProvider {
           linePrefix.includes('import') || 
           linePrefix.includes('from') || 
           linePrefix.includes('['))) {
-        return this.handleImportCompletions(document, linePrefix, fullText);
+        return this.handleImportCompletions(document, linePrefix, currentLine, fullText);
       }
       
       // Check for export completions
@@ -284,6 +284,9 @@ export class CompletionProvider {
       
       // Start building completion items
       let completions: CompletionItem[] = [];
+      
+      // Add standard library completions
+      completions = completions.concat(this.getStdLibCompletions(word));
       
       // Add document symbols
       completions = completions.concat(
@@ -505,6 +508,20 @@ export class CompletionProvider {
     if (!linePrefix.endsWith('.')) return [];
     
     const beforeDot = linePrefix.slice(0, -1).trim();
+    
+    // Check for function parameter with enum type: (install os: .)
+    const paramTypeMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
+    if (paramTypeMatch) {
+      const [_, funcName, paramName] = paramTypeMatch;
+      
+      // Get parameter type from the symbol manager
+      const paramType = this.symbolManager.getParameterType(funcName, paramName, document.uri);
+      
+      if (paramType && this.symbolManager.isEnumType(paramType)) {
+        // Return enum case completions for this parameter type
+        return this.getEnumValueCompletions(document, paramType, true);
+      }
+    }
     
     // First try to parse the current expression to get better context
     const currentExpression = getCurrentExpression(document, position);
@@ -2281,6 +2298,80 @@ export class CompletionProvider {
       });
     }
     
+    // Add data structure literals
+    if ('vector'.startsWith(word) || '['.startsWith(word) || 'array'.startsWith(word)) {
+      completions.push({
+        label: 'vector-literal',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector/Array literal',
+        insertText: '[${1:item1} ${2:item2} ${0:item3}]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-vector',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a vector/array literal. Example: [1 2 3]'
+        }
+      });
+    }
+    
+    if ('map'.startsWith(word) || '{'.startsWith(word) || 'object'.startsWith(word)) {
+      completions.push({
+        label: 'map-literal',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map/Object literal',
+        insertText: '{${1:key1} ${2:value1}, ${3:key2} ${0:value2}}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a map/object literal. Example: {name "John", age 30}'
+        }
+      });
+      
+      completions.push({
+        label: 'map-kv-literal',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with key-value syntax',
+        insertText: '{:${1:key1} ${2:value1}, :${3:key2} ${0:value2}}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map-kv',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a map with keyword syntax. Example: {:name "John", :age 30}'
+        }
+      });
+    }
+    
+    if ('set'.startsWith(word) || '#'.startsWith(word)) {
+      completions.push({
+        label: 'set-literal',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Set literal',
+        insertText: '#{${1:item1} ${2:item2} ${0:item3}}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-set',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a set literal. Example: #{1 2 3}'
+        }
+      });
+    }
+    
+    if ('list'.startsWith(word) || "'(".startsWith(word)) {
+      completions.push({
+        label: 'list-literal',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List literal',
+        insertText: "'(${1:item1} ${2:item2} ${0:item3})",
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-list',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: "Creates a list literal. Example: '(1 2 3)"
+        }
+      });
+    }
+    
     return completions;
   }
   
@@ -2289,9 +2380,123 @@ export class CompletionProvider {
    */
   private handleImportCompletions(
     document: TextDocument,
+    linePrefix: string,
     currentLine: string,
     fullText: string
   ): CompletionItem[] {
+    // Special case for empty import with no symbol: (import from ".|")
+    const emptyImportDotMatch = linePrefix.match(/import\s+from\s+(['"])(\.*)(["']?)$/);
+    if (emptyImportDotMatch) {
+      const [_, quoteType, dotPrefix, endQuote] = emptyImportDotMatch;
+      // Handle different dot patterns
+      if (dotPrefix === '.') {
+        return [
+          {
+            label: './',
+            kind: CompletionItemKind.Folder,
+            detail: 'Current directory',
+            insertText: './'.substring(dotPrefix.length),
+            insertTextFormat: InsertTextFormat.PlainText,
+            command: {
+              title: 'Trigger Suggestion',
+              command: 'editor.action.triggerSuggest'
+            }
+          },
+          {
+            label: '../',
+            kind: CompletionItemKind.Folder,
+            detail: 'Parent directory',
+            insertText: '../'.substring(dotPrefix.length),
+            insertTextFormat: InsertTextFormat.PlainText,
+            command: {
+              title: 'Trigger Suggestion',
+              command: 'editor.action.triggerSuggest'
+            }
+          }
+        ];
+      } else if (dotPrefix === '..') {
+        return [{
+          label: '../',
+          kind: CompletionItemKind.Folder,
+          detail: 'Parent directory',
+          insertText: '../'.substring(dotPrefix.length),
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          }
+        }];
+      }
+    }
+
+    // Match when a directory has been selected from autocompletion
+    // This specifically handles cases after selecting a directory from completion
+    const directorySelectedMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*\/)(["']?)$/);
+    if (directorySelectedMatch) {
+      const [_, quoteType, directoryPath] = directorySelectedMatch;
+      
+      // Provide path completions for the selected directory
+      const documentPath = document.uri.replace('file://', '');
+      const documentDir = path.dirname(documentPath);
+      
+      const completions = this.getRelativePathCompletionItems(documentDir, directoryPath);
+      
+      // Ensure items have a trigger for the next autocompletion
+      return completions.map(item => {
+        if (item.kind === CompletionItemKind.Folder) {
+          item.command = {
+            title: 'Trigger Suggestion',
+            command: 'editor.action.triggerSuggest'
+          };
+        }
+        return item;
+      });
+    }
+    
+    // Special case for import paths ending with a slash
+    // This captures when a user just typed a slash after a directory name in an import path
+    const importPathMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?\/)(["']?)$/);
+    if (importPathMatch) {
+      const [_, quoteType, directoryPath, endQuote] = importPathMatch;
+      
+      // If the current line still has the ending quote, remove it from our path
+      const cleanPath = directoryPath.endsWith(quoteType) 
+        ? directoryPath.substring(0, directoryPath.length - 1)
+        : directoryPath;
+        
+      // Provide path completions inside this directory
+      const documentPath = document.uri.replace('file://', '');
+      const documentDir = path.dirname(documentPath);
+      return this.getRelativePathCompletionItems(documentDir, cleanPath);
+    }
+    
+    // Detect when a directory has just been selected from autocomplete
+    // This handles the case when the user selects a directory that gets inserted with trailing slash
+    const recentlySelectedDirMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?\/(?:[^\/'"]+)\/)(["']?)$/);
+    if (recentlySelectedDirMatch) {
+      const [_, quoteType, directoryPath, endQuote] = recentlySelectedDirMatch;
+      
+      // Provide path completions inside this directory
+      const documentPath = document.uri.replace('file://', '');
+      const documentDir = path.dirname(documentPath);
+      return this.getRelativePathCompletionItems(documentDir, directoryPath);
+    }
+    
+    // Special case for paths that just had a slash added - trigger completion without needing to remove/retype
+    // This captures when a user just typed a slash after a directory name in an import path
+    const recentlyAddedSlashMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])([^'"]*?)(\/)$/);
+    if (recentlyAddedSlashMatch) {
+      const [_, quoteType, dirPath, slash] = recentlyAddedSlashMatch;
+      const fullPath = dirPath + slash;
+      
+      // Provide path completions for the directory
+      const documentPath = document.uri.replace('file://', '');
+      const documentDir = path.dirname(documentPath);
+      
+      // Get completions with the slash intact
+      return this.getRelativePathCompletionItems(documentDir, fullPath);
+    }
+    
     // Match import with vector style syntax: (import [sym
     const importVectorStartMatch = currentLine.match(/import\s+\[\s*([^,\s]*)$/);
     if (importVectorStartMatch) {
@@ -2559,6 +2764,14 @@ export class CompletionProvider {
               completionItem.insertText = entry.name;
             }
             
+            // Add command to automatically trigger suggestion after selecting a folder
+            if (isDir) {
+              completionItem.command = {
+                title: 'Trigger Suggestion',
+                command: 'editor.action.triggerSuggest'
+              };
+            }
+            
             completionItems.push(completionItem);
           }
         }
@@ -2651,7 +2864,28 @@ export class CompletionProvider {
     
     const objectName = dotMatch[1];
     
+    // First check if this is a JavaScript built-in object
+    const jsObjectCompletions = this.getJavaScriptObjectCompletions(objectName);
+    if (jsObjectCompletions.length > 0) {
+      return jsObjectCompletions;
+    }
+    
     const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+    
+    // Check if variable is a known collection type (Array, String)
+    const varSymbol = symbols.find(s => 
+      s.kind === 13 && // Variable
+      s.name === objectName
+    );
+    
+    if (varSymbol && varSymbol.data?.type) {
+      // Handle collection types
+      if (varSymbol.data.type === 'Array' || varSymbol.data.type === 'Vector') {
+        return this.getJavaScriptObjectCompletions('Array');
+      } else if (varSymbol.data.type === 'String') {
+        return this.getJavaScriptObjectCompletions('String');
+      }
+    }
     
     // Check if this might be a class instance
     const classSymbol = symbols.find(s => 
@@ -3141,6 +3375,188 @@ export class CompletionProvider {
     }
     
     return exportableSymbols;
+  }
+
+  /**
+   * Provide standard library function completions
+   */
+  private getStdLibCompletions(prefix: string): CompletionItem[] {
+    const stdLibItems = [
+      // Core functions
+      { name: 'print', kind: CompletionItemKind.Function, detail: 'Print to standard output' },
+      { name: 'println', kind: CompletionItemKind.Function, detail: 'Print to standard output with newline' },
+      { name: 'str', kind: CompletionItemKind.Function, detail: 'Convert to string' },
+      { name: 'concat', kind: CompletionItemKind.Function, detail: 'Concatenate strings or collections' },
+      
+      // Console functions
+      { name: 'console.log', kind: CompletionItemKind.Function, detail: 'Log to console' },
+      { name: 'console.error', kind: CompletionItemKind.Function, detail: 'Log error to console' },
+      { name: 'console.warn', kind: CompletionItemKind.Function, detail: 'Log warning to console' },
+      { name: 'console.info', kind: CompletionItemKind.Function, detail: 'Log info to console' },
+      { name: 'console.debug', kind: CompletionItemKind.Function, detail: 'Log debug to console' },
+      
+      // Math functions
+      { name: 'Math.abs', kind: CompletionItemKind.Function, detail: 'Absolute value' },
+      { name: 'Math.min', kind: CompletionItemKind.Function, detail: 'Minimum of values' },
+      { name: 'Math.max', kind: CompletionItemKind.Function, detail: 'Maximum of values' },
+      { name: 'Math.floor', kind: CompletionItemKind.Function, detail: 'Round down to nearest integer' },
+      { name: 'Math.ceil', kind: CompletionItemKind.Function, detail: 'Round up to nearest integer' },
+      { name: 'Math.round', kind: CompletionItemKind.Function, detail: 'Round to nearest integer' },
+      { name: 'Math.random', kind: CompletionItemKind.Function, detail: 'Random value between 0 and 1' },
+      
+      // Collection functions
+      { name: 'map', kind: CompletionItemKind.Function, detail: 'Transform each element in a collection' },
+      { name: 'filter', kind: CompletionItemKind.Function, detail: 'Filter elements in a collection' },
+      { name: 'reduce', kind: CompletionItemKind.Function, detail: 'Reduce collection to a single value' },
+      { name: 'forEach', kind: CompletionItemKind.Function, detail: 'Execute for each element in a collection' },
+      { name: 'get', kind: CompletionItemKind.Function, detail: 'Get element by key or index' },
+      { name: 'contains?', kind: CompletionItemKind.Function, detail: 'Check if collection contains value' },
+      { name: 'empty?', kind: CompletionItemKind.Function, detail: 'Check if collection is empty' },
+      { name: 'count', kind: CompletionItemKind.Function, detail: 'Count elements in a collection' },
+      { name: 'range', kind: CompletionItemKind.Function, detail: 'Generate a range of numbers' },
+      
+      // Control flow keywords
+      { name: 'if', kind: CompletionItemKind.Keyword, detail: 'Conditional expression' },
+      { name: 'when', kind: CompletionItemKind.Keyword, detail: 'Conditional execution when true' },
+      { name: 'unless', kind: CompletionItemKind.Keyword, detail: 'Conditional execution when false' },
+      { name: 'cond', kind: CompletionItemKind.Keyword, detail: 'Multi-way conditional' },
+      { name: 'do', kind: CompletionItemKind.Keyword, detail: 'Sequential execution block' },
+      { name: 'let', kind: CompletionItemKind.Keyword, detail: 'Bind local variables' },
+      { name: 'loop', kind: CompletionItemKind.Keyword, detail: 'Loop with recur' },
+      { name: 'recur', kind: CompletionItemKind.Keyword, detail: 'Loop recursion point' },
+      { name: 'for', kind: CompletionItemKind.Keyword, detail: 'Iterative loop' },
+      { name: 'while', kind: CompletionItemKind.Keyword, detail: 'While loop' },
+      { name: 'repeat', kind: CompletionItemKind.Keyword, detail: 'Repeat n times' },
+      
+      // Data structure literals
+      { name: 'vector', kind: CompletionItemKind.Function, detail: 'Create a vector [1 2 3]' },
+      { name: 'list', kind: CompletionItemKind.Function, detail: 'Create a list \'(1 2 3)' },
+      { name: 'set', kind: CompletionItemKind.Function, detail: 'Create a set #{1 2 3}' },
+      { name: 'map', kind: CompletionItemKind.Function, detail: 'Create a map {key1 val1, key2 val2}' }
+    ];
+    
+    // Filter by prefix if provided
+    const filtered = stdLibItems.filter(item => 
+      !prefix || item.name.toLowerCase().includes(prefix.toLowerCase())
+    );
+    
+    // Convert to completion items
+    return filtered.map(item => ({
+      label: item.name,
+      kind: item.kind,
+      detail: item.detail,
+      documentation: {
+        kind: MarkupKind.Markdown,
+        value: `\`${item.name}\` - ${item.detail}`
+      },
+      sortText: `01-${item.name}` // High priority for standard library items
+    }));
+  }
+
+  /**
+   * Get completions for JavaScript objects (e.g., console.log)
+   */
+  private getJavaScriptObjectCompletions(objectName: string): CompletionItem[] {
+    // Define common JavaScript objects and their members
+    const jsObjects: Record<string, Array<{ name: string, kind: CompletionItemKind, detail: string }>> = {
+      // Console object
+      'console': [
+        { name: 'log', kind: CompletionItemKind.Method, detail: 'Log messages to the console' },
+        { name: 'error', kind: CompletionItemKind.Method, detail: 'Output error messages to the console' },
+        { name: 'warn', kind: CompletionItemKind.Method, detail: 'Output warning messages to the console' },
+        { name: 'info', kind: CompletionItemKind.Method, detail: 'Output informational messages to the console' },
+        { name: 'debug', kind: CompletionItemKind.Method, detail: 'Output debug messages to the console' },
+        { name: 'trace', kind: CompletionItemKind.Method, detail: 'Output a stack trace to the console' },
+        { name: 'time', kind: CompletionItemKind.Method, detail: 'Start a timer' },
+        { name: 'timeEnd', kind: CompletionItemKind.Method, detail: 'End a timer and output elapsed time' },
+        { name: 'count', kind: CompletionItemKind.Method, detail: 'Count number of times this is called' }
+      ],
+      
+      // Math object
+      'Math': [
+        { name: 'abs', kind: CompletionItemKind.Method, detail: 'Absolute value of a number' },
+        { name: 'ceil', kind: CompletionItemKind.Method, detail: 'Round up to the nearest integer' },
+        { name: 'floor', kind: CompletionItemKind.Method, detail: 'Round down to the nearest integer' },
+        { name: 'max', kind: CompletionItemKind.Method, detail: 'Return the largest of zero or more numbers' },
+        { name: 'min', kind: CompletionItemKind.Method, detail: 'Return the smallest of zero or more numbers' },
+        { name: 'pow', kind: CompletionItemKind.Method, detail: 'Return base to the exponent power' },
+        { name: 'random', kind: CompletionItemKind.Method, detail: 'Return a random number between 0 and 1' },
+        { name: 'round', kind: CompletionItemKind.Method, detail: 'Round to the nearest integer' },
+        { name: 'sqrt', kind: CompletionItemKind.Method, detail: 'Square root of a number' },
+        { name: 'PI', kind: CompletionItemKind.Constant, detail: 'Ratio of circumference to diameter of a circle' },
+        { name: 'E', kind: CompletionItemKind.Constant, detail: 'Euler\'s number' }
+      ],
+      
+      // String prototype methods
+      'String': [
+        { name: 'length', kind: CompletionItemKind.Property, detail: 'Length of the string' },
+        { name: 'charAt', kind: CompletionItemKind.Method, detail: 'Return character at specified index' },
+        { name: 'concat', kind: CompletionItemKind.Method, detail: 'Concatenate strings' },
+        { name: 'indexOf', kind: CompletionItemKind.Method, detail: 'Find index of first occurrence' },
+        { name: 'lastIndexOf', kind: CompletionItemKind.Method, detail: 'Find index of last occurrence' },
+        { name: 'match', kind: CompletionItemKind.Method, detail: 'Match string against regular expression' },
+        { name: 'replace', kind: CompletionItemKind.Method, detail: 'Replace matches with new substring' },
+        { name: 'slice', kind: CompletionItemKind.Method, detail: 'Extract a section of a string' },
+        { name: 'split', kind: CompletionItemKind.Method, detail: 'Split string into array of substrings' },
+        { name: 'substring', kind: CompletionItemKind.Method, detail: 'Return part of the string' },
+        { name: 'toLowerCase', kind: CompletionItemKind.Method, detail: 'Convert to lowercase' },
+        { name: 'toUpperCase', kind: CompletionItemKind.Method, detail: 'Convert to uppercase' },
+        { name: 'trim', kind: CompletionItemKind.Method, detail: 'Remove whitespace from start and end' }
+      ],
+      
+      // Array prototype methods
+      'Array': [
+        { name: 'length', kind: CompletionItemKind.Property, detail: 'Number of elements' },
+        { name: 'concat', kind: CompletionItemKind.Method, detail: 'Merge two or more arrays' },
+        { name: 'filter', kind: CompletionItemKind.Method, detail: 'Create new array with elements that pass test' },
+        { name: 'find', kind: CompletionItemKind.Method, detail: 'Return first element that satisfies test' },
+        { name: 'forEach', kind: CompletionItemKind.Method, detail: 'Execute function for each element' },
+        { name: 'includes', kind: CompletionItemKind.Method, detail: 'Check if array includes element' },
+        { name: 'indexOf', kind: CompletionItemKind.Method, detail: 'Find index of first occurrence' },
+        { name: 'join', kind: CompletionItemKind.Method, detail: 'Join elements into string' },
+        { name: 'map', kind: CompletionItemKind.Method, detail: 'Create new array with results of callback' },
+        { name: 'pop', kind: CompletionItemKind.Method, detail: 'Remove last element and return it' },
+        { name: 'push', kind: CompletionItemKind.Method, detail: 'Add elements to end of array' },
+        { name: 'reduce', kind: CompletionItemKind.Method, detail: 'Reduce array to single value' },
+        { name: 'slice', kind: CompletionItemKind.Method, detail: 'Return shallow copy of portion of array' },
+        { name: 'sort', kind: CompletionItemKind.Method, detail: 'Sort elements of array' }
+      ],
+      
+      // Date object
+      'Date': [
+        { name: 'getDate', kind: CompletionItemKind.Method, detail: 'Get day of the month' },
+        { name: 'getDay', kind: CompletionItemKind.Method, detail: 'Get day of the week' },
+        { name: 'getFullYear', kind: CompletionItemKind.Method, detail: 'Get year' },
+        { name: 'getHours', kind: CompletionItemKind.Method, detail: 'Get hour' },
+        { name: 'getMinutes', kind: CompletionItemKind.Method, detail: 'Get minutes' },
+        { name: 'getMonth', kind: CompletionItemKind.Method, detail: 'Get month' },
+        { name: 'getSeconds', kind: CompletionItemKind.Method, detail: 'Get seconds' },
+        { name: 'getTime', kind: CompletionItemKind.Method, detail: 'Get timestamp (milliseconds since epoch)' },
+        { name: 'now', kind: CompletionItemKind.Method, detail: 'Return current timestamp' },
+        { name: 'toISOString', kind: CompletionItemKind.Method, detail: 'Convert to ISO format string' },
+        { name: 'toDateString', kind: CompletionItemKind.Method, detail: 'Convert to date string' },
+        { name: 'toTimeString', kind: CompletionItemKind.Method, detail: 'Convert to time string' }
+      ]
+    };
+    
+    // Check if object name is a known JavaScript object
+    if (objectName in jsObjects) {
+      const members = jsObjects[objectName];
+      
+      // Convert to completion items
+      return members.map(member => ({
+        label: member.name,
+        kind: member.kind,
+        detail: `${objectName}.${member.name} - ${member.detail}`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `\`${objectName}.${member.name}\`\n\n${member.detail}`
+        },
+        sortText: `10-${member.name}`
+      }));
+    }
+    
+    return [];
   }
 }
 
