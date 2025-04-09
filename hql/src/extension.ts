@@ -6,7 +6,7 @@ import {
   ServerOptions,
   TransportKind
 } from "vscode-languageclient/node";
-import { ui } from "./ui-manager";
+import { ui } from "./ui/ui-manager";
 import { config } from "./config-manager";
 import { evaluator } from "./evaluation-manager";
 import { startServer, stopServer, restartServer, isServerRunning } from './server-manager';

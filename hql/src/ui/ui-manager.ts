@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
-import { Logger } from './logger';
-import { config } from './config-manager';
-import { toVsCodeRange } from './range-utils';
+import { Logger } from '../logger';
+import { config } from '../config-manager';
+import { toVsCodeRange } from '../range-utils';
+import { UIUtils } from './ui-utils';
+import { parenStyleManager } from './paren-style-manager';
 
 // Type definitions for decoration entries
 interface DecorationEntry {
@@ -15,7 +17,7 @@ type EvaluationState = 'success' | 'error' | 'pending';
 
 /**
  * UI component manager for HQL extension
- * Centralized service for all UI-related functionality with improved architecture
+ * Centralized service for all UI-related functionality
  */
 export class UIManager {
   private static instance: UIManager;
@@ -24,44 +26,10 @@ export class UIManager {
   private decorationMap: Map<string, Map<string, DecorationEntry>> = new Map();
   private statusBarItems: Map<string, vscode.StatusBarItem> = new Map();
   private logger: Logger;
-
-  // Theme constants organized by semantic meaning
-  private readonly THEME = {
-    EVALUATION: {
-      SUCCESS: {
-        BG: "rgba(100, 200, 100, 0.12)",
-        BORDER: "rgba(100, 200, 100, 0.25)",
-        TEXT: "#3c9a3c"
-      },
-      ERROR: {
-        BG: "rgba(255, 100, 100, 0.12)",
-        BORDER: "rgba(255, 100, 100, 0.25)",
-        TEXT: "#d32f2f"
-      },
-      PENDING: {
-        BG: "rgba(100, 100, 255, 0.12)",
-        BORDER: "rgba(100, 100, 255, 0.25)",
-        TEXT: "#4040ff"
-      }
-    },
-    PARENS: {
-      COLORS: [
-        "#8000ff", // SICP purple (level 1)
-        "#ff0000", // SICP red (level 2)
-        "#0000ff", // SICP blue (level 3)
-        "#009688", // teal (level 4)
-        "#ff9800", // orange (level 5)
-        "#9c27b0"  // purple (level 6)
-      ],
-      OPACITY: 0.9,
-      WEIGHT: "bold"
-    },
-    MATCHING: {
-      BG: "rgba(100, 100, 255, 0.18)",
-      BORDER: "rgba(100, 100, 255, 0.4)",
-      DURATION_MS: 500
-    }
-  };
+  
+  // Performance optimization: Pre-created decoration types for common use cases
+  private cachedDecorationTypes: Map<string, vscode.TextEditorDecorationType> = new Map();
+  private decorationDisposables: vscode.Disposable[] = [];
 
   private constructor() {
     this.logger = new Logger(false);
@@ -93,37 +61,142 @@ export class UIManager {
       context.subscriptions.push(item);
     }
     
-    // Register editor change event to apply rainbow parentheses
-    context.subscriptions.push(
-      vscode.window.onDidChangeActiveTextEditor(editor => {
-        if (editor && editor.document.languageId === 'hql') {
-          if (config.isPareEditEnabled()) {
-            this.applyRainbowParentheses(editor);
-          }
-        }
-      })
-    );
+    // Initialize the parenthesis style manager
+    parenStyleManager.initialize(context);
     
-    // Register document close event to clear decorations
+    // Register document close event to clean up decorations
     context.subscriptions.push(
       vscode.workspace.onDidCloseTextDocument(document => {
         this.clearDecorationsForDocument(document.uri.toString());
       })
     );
     
-    // Clear decorations on configuration change that might affect them
+    // Register configuration change event to update decorations
     context.subscriptions.push(
       config.onDidChangeConfiguration(() => {
-        vscode.window.visibleTextEditors.forEach(editor => {
-          if (editor.document.languageId === 'hql') {
-            this.clearDecorationsForDocument(editor.document.uri.toString());
-            if (config.isPareEditEnabled()) {
-              this.applyRainbowParentheses(editor);
-            }
-          }
-        });
+        this.handleConfigurationChange();
       })
     );
+    
+    // Register visible editor change to handle theme switching
+    context.subscriptions.push(
+      vscode.window.onDidChangeActiveColorTheme(() => {
+        this.refreshAllDecorations();
+      })
+    );
+    
+    // Add our decoration disposables to the context
+    context.subscriptions.push(
+      new vscode.Disposable(() => {
+        this.disposeAllDecorations();
+      })
+    );
+  }
+
+  /**
+   * Refresh all decorations when theme changes
+   */
+  private refreshAllDecorations(): void {
+    // Invalidate cached decorations since colors might have changed
+    this.disposeAllDecorations();
+    this.cachedDecorationTypes.clear();
+    
+    // Reapply all decorations
+    vscode.window.visibleTextEditors.forEach(editor => {
+      if (editor.document.languageId === 'hql') {
+        this.reapplyDecorationsForDocument(editor);
+      }
+    });
+  }
+  
+  /**
+   * Reapply all decorations for a document
+   */
+  private reapplyDecorationsForDocument(editor: vscode.TextEditor): void {
+    const uri = editor.document.uri.toString();
+    const decorations = this.decorationMap.get(uri);
+    
+    if (!decorations) return;
+    
+    // Group decorations by type
+    const decorationsByType = new Map<string, {entry: DecorationEntry, ranges: vscode.DecorationOptions[]}>();
+    
+    for (const [id, entry] of decorations.entries()) {
+      const typeKey = id.split(':').pop() || '';
+      
+      if (!decorationsByType.has(typeKey)) {
+        // Create new decoration type
+        const newType = this.createDecorationTypeFromMetadata(entry);
+        entry.type = newType;
+        
+        decorationsByType.set(typeKey, {
+          entry,
+          ranges: [{range: entry.range}]
+        });
+      } else {
+        // Add to existing range
+        decorationsByType.get(typeKey)!.ranges.push({range: entry.range});
+      }
+    }
+    
+    // Apply decoration ranges
+    for (const {entry, ranges} of decorationsByType.values()) {
+      editor.setDecorations(entry.type, ranges);
+    }
+    
+    // Reapply parentheses styling
+    parenStyleManager.applyParenStyles(editor);
+  }
+  
+  /**
+   * Create a new decoration type based on entry metadata
+   */
+  private createDecorationTypeFromMetadata(entry: DecorationEntry): vscode.TextEditorDecorationType {
+    if (!entry.metadata) return vscode.window.createTextEditorDecorationType({});
+    
+    if (entry.metadata.state) {
+      return this.getEvaluationDecorationType(entry.metadata.state as EvaluationState);
+    }
+    
+    return vscode.window.createTextEditorDecorationType({});
+  }
+
+  /**
+   * Handle configuration changes
+   */
+  private handleConfigurationChange(): void {
+    // Update editor decorations if needed
+    vscode.window.visibleTextEditors.forEach(editor => {
+      if (editor.document.languageId === 'hql') {
+        // Only handle non-parenthesis decorations here
+        // Parenthesis styling is handled by ParenStyleManager
+      }
+    });
+  }
+
+  /**
+   * Dispose all decorations
+   */
+  private disposeAllDecorations(): void {
+    // Dispose all tracked decorations
+    for (const decorationMap of this.decorationMap.values()) {
+      for (const entry of decorationMap.values()) {
+        entry.type.dispose();
+      }
+    }
+    this.decorationMap.clear();
+    
+    // Dispose all cached decorations
+    for (const type of this.cachedDecorationTypes.values()) {
+      type.dispose();
+    }
+    this.cachedDecorationTypes.clear();
+    
+    // Dispose all other disposables
+    for (const disposable of this.decorationDisposables) {
+      disposable.dispose();
+    }
+    this.decorationDisposables = [];
   }
 
   /**
@@ -152,11 +225,11 @@ export class UIManager {
     if (!item) return;
     
     if (running) {
-      item.text = `HQL LSP: $(check) ${status}`;
+      item.text = `$(rocket) HQL LSP: ${status}`;
       item.tooltip = `HQL Language Server is ${status}`;
       item.color = undefined; // Use default color
     } else {
-      item.text = `HQL LSP: $(alert) ${status}`;
+      item.text = `$(alert) HQL LSP: ${status}`;
       item.tooltip = `HQL Language Server is ${status}. Click to check diagnostics.`;
       item.color = new vscode.ThemeColor('errorForeground');
       item.command = 'hql.checkLsp';
@@ -164,7 +237,7 @@ export class UIManager {
   }
 
   /**
-   * Update the REPL server status in the status bar
+   * Update the nREPL server status in the status bar
    * @param running Whether the server is running
    */
   public updateServerStatus(running: boolean): void {
@@ -172,37 +245,46 @@ export class UIManager {
     if (!item) return;
     
     if (running) {
-      item.text = "$(check) HQL REPL Server";
-      item.tooltip = "HQL REPL Server is running. Click to stop.";
+      item.text = "$(vm-running) HQL nREPL Connected";
+      item.tooltip = "HQL nREPL Server is running. Click to disconnect.";
+      item.color = new vscode.ThemeColor('terminal.ansiGreen');
       item.command = "hql.stopREPLServer";
     } else {
-      item.text = "$(stop) HQL REPL Server";
-      item.tooltip = "HQL REPL Server is not running. Click to start.";
+      item.text = "$(debug-disconnect) HQL nREPL Disconnected";
+      item.tooltip = "HQL nREPL Server is not running. Click to connect.";
+      item.color = new vscode.ThemeColor('terminal.ansiRed');
       item.command = "hql.startREPLServer";
     }
   }
 
   /**
-   * Get theme colors based on state and theme
+   * Get a decoration type for a given evaluation state
    */
-  private getThemeColors(state: EvaluationState): { bg: string; border: string; text: string } {
-    const colors = this.THEME.EVALUATION[state.toUpperCase() as keyof typeof this.THEME.EVALUATION];
+  private getEvaluationDecorationType(state: EvaluationState): vscode.TextEditorDecorationType {
+    const cacheKey = `eval-${state}`;
     
-    // Ensure colors are properly themed between light/dark modes
-    const isDark = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark;
+    if (this.cachedDecorationTypes.has(cacheKey)) {
+      return this.cachedDecorationTypes.get(cacheKey)!;
+    }
     
-    return {
-      bg: colors.BG,
-      border: colors.BORDER,
-      text: colors.TEXT
-    };
+    const colors = UIUtils.THEME.EVALUATION[state.toUpperCase() as keyof typeof UIUtils.THEME.EVALUATION];
+    
+    const decorationType = vscode.window.createTextEditorDecorationType({
+      backgroundColor: colors.BG,
+      border: `1px solid ${colors.BORDER}`,
+      borderRadius: "3px",
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    
+    this.cachedDecorationTypes.set(cacheKey, decorationType);
+    return decorationType;
   }
 
   /**
    * Generate a unique ID for a decoration based on range and type
    */
   private generateDecorationId(range: vscode.Range, type: string): string {
-    return `${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}:${type}`;
+    return UIUtils.generateDecorationId(range, type);
   }
 
   /**
@@ -257,7 +339,7 @@ export class UIManager {
     const overlappingKeys: string[] = [];
     
     for (const [id, entry] of decorations.entries()) {
-      if (this.rangesOverlap(entry.range, targetRange)) {
+      if (UIUtils.rangesOverlap(entry.range, targetRange)) {
         overlappingKeys.push(id);
         entry.type.dispose();
       }
@@ -275,100 +357,55 @@ export class UIManager {
   }
 
   /**
-   * Check if two ranges overlap
-   */
-  private rangesOverlap(a: vscode.Range, b: vscode.Range): boolean {
-    return !a.end.isBefore(b.start) && !b.end.isBefore(a.start);
-  }
-
-  /**
-   * Format an evaluation result for display
-   */
-  private formatResult(result: string): string {
-    if (!result) return "";
-    
-    // Detect if result is JSON and format it
-    try {
-      const parsed = JSON.parse(result);
-      return JSON.stringify(parsed, null, 2);
-    } catch (e) {
-      // Not JSON, perform basic formatting
-      
-      // Truncate extremely long results
-      if (result.length > 1000) {
-        return result.substring(0, 997) + "...";
-      }
-      
-      // Handle multiline results more gracefully
-      if (result.includes('\n')) {
-        const lines = result.split('\n');
-        if (lines.length > 3) {
-          return lines.slice(0, 2).join('\n') + '\n...';
-        }
-      }
-      
-      return result;
-    }
-  }
-
-  /**
-   * Create hover markdown for evaluation results
-   */
-  private createHoverMarkdown(result: string, isError: boolean = false): vscode.MarkdownString {
-    const header = isError ? "**HQL Error**" : "**HQL Evaluation Result**";
-    const markdown = new vscode.MarkdownString(`${header}\n\n\`\`\`\n${result}\n\`\`\``);
-    markdown.isTrusted = true;
-    return markdown;
-  }
-
-  /**
-   * Show inline evaluation result
+   * Show inline evaluation result with syntax highlighting and better formatting
    * @param editor The text editor to apply decorations to
    * @param range The range to decorate
    * @param result The evaluation result to display
+   * @param code The code that was evaluated
    * @returns The decoration type for potential future reference
    */
   public showInlineEvaluation(
     editor: vscode.TextEditor,
     range: vscode.Range | any,
-    result: string
+    result: string,
+    code?: string
   ): vscode.TextEditorDecorationType {
     const vsCodeRange = toVsCodeRange(range);
     this.clearDecorationsForRange(editor.document, vsCodeRange);
     
+    // Extract code from editor if not provided
+    const codeToDisplay = code || editor.document.getText(vsCodeRange);
+    
     // Determine if this is a pending result
     const isPending = result === "Evaluating...";
-    const state = isPending ? "pending" : "success";
-    
-    // Get themed colors
-    const colors = this.getThemeColors(state);
+    const state: EvaluationState = isPending ? "pending" : "success";
     
     // Create highlight decoration
-    const highlightType = vscode.window.createTextEditorDecorationType({
-      backgroundColor: colors.bg,
-      border: `1px solid ${colors.border}`,
-      borderRadius: "3px",
-      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
-    });
-    
-    editor.setDecorations(highlightType, [{ range: vsCodeRange }]);
+    const highlightType = this.getEvaluationDecorationType(state);
+    editor.setDecorations(highlightType, [{ 
+      range: vsCodeRange,
+      hoverMessage: UIUtils.createHoverMarkdown(codeToDisplay, result)
+    }]);
     
     // Add highlight decoration to tracking
     this.addDecoration(
       editor.document.uri.toString(), 
       'highlight', 
-      { type: highlightType, range: vsCodeRange, metadata: { state } }
+      { type: highlightType, range: vsCodeRange, metadata: { state, code: codeToDisplay } }
     );
   
     // Format the result text for display
-    const formattedResult = this.formatResult(result);
+    const formattedResult = UIUtils.formatResult(result);
+    
+    // Get themed colors
+    const colors = UIUtils.THEME.EVALUATION[state.toUpperCase() as keyof typeof UIUtils.THEME.EVALUATION];
     
     // Create inline decoration type for the result
     const inlineType = vscode.window.createTextEditorDecorationType({
       after: {
-        contentText: ` => ${formattedResult}`,
+        contentText: ` ⟹ ${formattedResult}`,
         margin: "0 0 0 0.5em",
-        color: colors.text,
+        color: colors.TEXT,
         fontStyle: isPending ? "italic" : "normal",
         fontWeight: isPending ? "normal" : "bold"
       },
@@ -377,14 +414,17 @@ export class UIManager {
     
     editor.setDecorations(inlineType, [{ 
       range: vsCodeRange,
-      hoverMessage: this.createHoverMarkdown(formattedResult)
+      hoverMessage: UIUtils.createHoverMarkdown(codeToDisplay, result)
     }]);
+    
+    // Track the disposable
+    this.decorationDisposables.push(inlineType);
     
     // Add inline decoration to tracking
     this.addDecoration(
       editor.document.uri.toString(), 
       'inline', 
-      { type: inlineType, range: vsCodeRange, metadata: { result } }
+      { type: inlineType, range: vsCodeRange, metadata: { state, result, code: codeToDisplay } }
     );
     
     this.logger.debug(`Added evaluation result decoration: ${result.substring(0, 30)}${result.length > 30 ? '...' : ''}`);
@@ -397,33 +437,41 @@ export class UIManager {
    * @param editor The text editor to apply decorations to
    * @param range The range to decorate
    * @param errorMessage The error message to display
+   * @param code The code that caused the error
    */
   public showInlineError(
     editor: vscode.TextEditor,
     range: vscode.Range | any,
-    errorMessage: string
+    errorMessage: string,
+    code?: string
   ): void {
     const vsCodeRange = toVsCodeRange(range);
     this.clearDecorationsForRange(editor.document, vsCodeRange);
     
+    // Extract code from editor if not provided
+    const codeToDisplay = code || editor.document.getText(vsCodeRange);
+    
     // Get error colors
-    const colors = this.getThemeColors("error");
+    const colors = UIUtils.THEME.EVALUATION.ERROR;
     
     // Create error highlight decoration
     const errorHighlight = vscode.window.createTextEditorDecorationType({
-      backgroundColor: colors.bg,
-      border: `1px solid ${colors.border}`,
+      backgroundColor: colors.BG,
+      border: `1px solid ${colors.BORDER}`,
       borderRadius: "3px",
       rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
     });
     
-    editor.setDecorations(errorHighlight, [{ range: vsCodeRange }]);
+    editor.setDecorations(errorHighlight, [{ 
+      range: vsCodeRange,
+      hoverMessage: UIUtils.createHoverMarkdown(codeToDisplay, errorMessage, true)
+    }]);
     
     // Add error highlight to tracking
     this.addDecoration(
       editor.document.uri.toString(), 
       'error-highlight', 
-      { type: errorHighlight, range: vsCodeRange }
+      { type: errorHighlight, range: vsCodeRange, metadata: { state: 'error', code: codeToDisplay } }
     );
   
     // Format error message (truncate if too long)
@@ -434,9 +482,9 @@ export class UIManager {
     // Create inline decoration for the error message
     const inlineType = vscode.window.createTextEditorDecorationType({
       after: {
-        contentText: ` => Error: ${formattedError}`,
+        contentText: ` ⟹ Error: ${formattedError}`,
         margin: "0 0 0 0.5em",
-        color: colors.text,
+        color: colors.TEXT,
         fontStyle: "italic",
       },
       rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
@@ -444,134 +492,36 @@ export class UIManager {
     
     editor.setDecorations(inlineType, [{ 
       range: vsCodeRange,
-      hoverMessage: this.createHoverMarkdown(errorMessage, true)
+      hoverMessage: UIUtils.createHoverMarkdown(codeToDisplay, errorMessage, true)
     }]);
+    
+    // Track the disposable
+    this.decorationDisposables.push(inlineType);
     
     // Add inline error to tracking
     this.addDecoration(
       editor.document.uri.toString(), 
       'error-inline', 
-      { type: inlineType, range: vsCodeRange, metadata: { error: errorMessage } }
+      { type: inlineType, range: vsCodeRange, metadata: { state: 'error', error: errorMessage, code: codeToDisplay } }
     );
     
     this.logger.debug(`Added error decoration: ${errorMessage.substring(0, 30)}${errorMessage.length > 30 ? '...' : ''}`);
   }
 
   /**
-   * Apply rainbow parentheses colorization for HQL files
-   * @param editor The text editor to apply colorization to
-   */
-  public applyRainbowParentheses(editor: vscode.TextEditor): void {
-    // Only apply to HQL files
-    if (editor.document.languageId !== 'hql') {
-      return;
-    }
-    
-    const text = editor.document.getText();
-    
-    // Get configured colors or use defaults
-    const parenColors = config.getParenthesesColors().length > 0 
-      ? config.getParenthesesColors() 
-      : this.THEME.PARENS.COLORS;
-    
-    // Create decoration types for each nesting level
-    const decorationTypes = parenColors.map(color =>
-      vscode.window.createTextEditorDecorationType({
-        color: color,
-        fontWeight: this.THEME.PARENS.WEIGHT,
-        opacity: this.THEME.PARENS.OPACITY.toString()
-      })
-    );
-    
-    // Find all parentheses and apply decorations based on nesting level
-    const parenRanges: vscode.Range[][] = decorationTypes.map(() => []);
-    
-    let nestingLevel = 0;
-    const parenStack: { char: string, pos: vscode.Position }[] = [];
-    const openingChars = '([{';
-    const closingChars = ')]}';
-    
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      const pos = editor.document.positionAt(i);
-      
-      if (openingChars.includes(char)) {
-        // Store opening paren info
-        parenStack.push({ char, pos });
-        
-        // Apply color based on current nesting level
-        const colorIndex = nestingLevel % decorationTypes.length;
-        parenRanges[colorIndex].push(new vscode.Range(pos, pos.translate(0, 1)));
-        nestingLevel++;
-      } 
-      else if (closingChars.includes(char)) {
-        nestingLevel = Math.max(0, nestingLevel - 1);
-        
-        // Get matching color index
-        const colorIndex = nestingLevel % decorationTypes.length;
-        parenRanges[colorIndex].push(new vscode.Range(pos, pos.translate(0, 1)));
-        
-        // Pop from stack (for potential future balance checking)
-        if (parenStack.length > 0) {
-          parenStack.pop();
-        }
-      }
-    }
-    
-    // Apply the decorations
-    const docUri = editor.document.uri.toString();
-    
-    // Track these decorations
-    for (let i = 0; i < decorationTypes.length; i++) {
-      if (parenRanges[i].length > 0) {
-        editor.setDecorations(decorationTypes[i], parenRanges[i]);
-        
-        // Add to tracking
-        for (const range of parenRanges[i]) {
-          this.addDecoration(
-            docUri,
-            `rainbow-${i}`,
-            { type: decorationTypes[i], range, metadata: { level: i } }
-          );
-        }
-      }
-    }
-  }
-
-  /**
    * Highlight matching brackets/parentheses at given positions
-   * @param editor The text editor to apply highlighting to
-   * @param openPos Position of the opening delimiter
-   * @param closePos Position of the closing delimiter
+   * Delegates to the ParenStyleManager for consistent styling
    */
   public highlightMatchingDelimiters(
     editor: vscode.TextEditor,
     openPos: vscode.Position,
     closePos: vscode.Position
   ): void {
-    const decoration = vscode.window.createTextEditorDecorationType({
-      backgroundColor: this.THEME.MATCHING.BG,
-      border: `1px solid ${this.THEME.MATCHING.BORDER}`,
-      borderRadius: "2px"
-    });
-    
-    const ranges = [
-      new vscode.Range(openPos, openPos.translate(0, 1)),
-      new vscode.Range(closePos, closePos.translate(0, 1))
-    ];
-    
-    editor.setDecorations(decoration, ranges);
-    
-    // Don't track these decorations as they're temporary
-    
-    // Automatically remove highlight after a short delay
-    setTimeout(() => {
-      decoration.dispose();
-    }, this.THEME.MATCHING.DURATION_MS);
+    parenStyleManager.highlightMatchingPair(editor, openPos, closePos);
   }
 
   /**
-   * Highlight mismatched or unbalanced delimiters
+   * Highlight mismatched or unbalanced delimiters with error styling
    * @param editor The text editor to apply highlighting to
    * @param positions Positions of problematic delimiters
    * @param duration Optional duration in ms before clearing (default: 2000ms)
@@ -585,8 +535,8 @@ export class UIManager {
     
     // Create error highlight decoration
     const errorHighlight = vscode.window.createTextEditorDecorationType({
-      backgroundColor: this.THEME.EVALUATION.ERROR.BG,
-      border: `1px solid ${this.THEME.EVALUATION.ERROR.BORDER}`,
+      backgroundColor: UIUtils.THEME.EVALUATION.ERROR.BG,
+      border: `1px solid ${UIUtils.THEME.EVALUATION.ERROR.BORDER}`,
       borderRadius: "2px",
       fontWeight: "bold"
     });
@@ -594,10 +544,27 @@ export class UIManager {
     const ranges = positions.map(pos => new vscode.Range(pos, pos.translate(0, 1)));
     editor.setDecorations(errorHighlight, ranges);
     
+    // Track for disposal
+    this.decorationDisposables.push(errorHighlight);
+    
     // Automatically dispose the decoration after the specified duration
     setTimeout(() => {
       errorHighlight.dispose();
+      // Remove from disposables array
+      const index = this.decorationDisposables.indexOf(errorHighlight);
+      if (index !== -1) {
+        this.decorationDisposables.splice(index, 1);
+      }
     }, duration);
+  }
+
+  /**
+   * Apply parentheses styling for HQL files
+   * @deprecated Use parenStyleManager.applyParenStyles instead
+   */
+  public applyRainbowParentheses(editor: vscode.TextEditor): void {
+    // Delegate to the dedicated parenthesis style manager
+    parenStyleManager.applyParenStyles(editor);
   }
 
   /**

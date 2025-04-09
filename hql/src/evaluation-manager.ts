@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { fetchEvaluation } from './client';
 import { isServerRunning, startServer } from './server-manager';
 import { Logger } from './logger';
-import { ui } from "./ui-manager"
+import { ui } from "./ui/ui-manager";
 import { config } from './config-manager';
 import { toVsCodeRange } from './range-utils';
 import { getExpressionRange, getOutermostExpressionRange } from './helper/getExpressionRange';
@@ -11,11 +11,15 @@ import { getExpressionRange, getOutermostExpressionRange } from './helper/getExp
 const logger = new Logger(true);
 
 /**
- * Manager for handling code evaluation
+ * Manager for handling code evaluation with improved UI feedback
  */
 export class EvaluationManager {
   private static instance: EvaluationManager;
   private activeEvaluations: Map<string, AbortController> = new Map();
+  private lastResults: Map<string, { code: string, result: string, success: boolean }> = new Map();
+
+  // Debounce timers for showing notifications
+  private serverStartPrompt: NodeJS.Timeout | null = null;
 
   private constructor() {
     // Private constructor for singleton pattern
@@ -44,23 +48,73 @@ export class EvaluationManager {
    */
   private async ensureServerRunning(): Promise<boolean> {
     if (!await isServerRunning()) {
-      const startResponse = await vscode.window.showInformationMessage(
-        "HQL REPL server is not running. Do you want to start it?",
-        "Yes", "No"
-      );
-      
-      if (startResponse === "Yes") {
-        await startServer();
-        return await isServerRunning();
-      } else {
-        return false;
+      // Debounce server start prompts to avoid overwhelming the user
+      if (this.serverStartPrompt) {
+        clearTimeout(this.serverStartPrompt);
       }
+      
+      this.serverStartPrompt = setTimeout(async () => {
+        const startResponse = await vscode.window.showInformationMessage(
+          "HQL nREPL server is not running. Do you want to connect?",
+          { modal: false },
+          { title: "Yes", isCloseAffordance: false },
+          { title: "No", isCloseAffordance: true }
+        );
+        
+        if (startResponse && startResponse.title === "Yes") {
+          ui.withProgress("Connecting to nREPL server", async (progress) => {
+            progress.report({ message: "Initializing..." });
+            await startServer();
+            progress.report({ message: "Connecting...", increment: 50 });
+            
+            // Short delay to allow server to initialize
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            const running = await isServerRunning();
+            if (running) {
+              progress.report({ message: "Connected", increment: 50 });
+              ui.updateServerStatus(true);
+            } else {
+              ui.showError("Failed to connect to nREPL server. Check console for details.");
+            }
+            return running;
+          });
+        }
+        
+        this.serverStartPrompt = null;
+      }, 500);
+      
+      return false;
     }
     return true;
   }
 
   /**
-   * Evaluate the current expression under cursor
+   * Format evaluation error messages for better readability
+   */
+  private formatErrorMessage(error: any): string {
+    if (!error) return "Unknown error";
+    
+    let message = error.message || String(error);
+    
+    // Improve common error messages
+    if (message.includes("ECONNREFUSED")) {
+      return "Connection refused. nREPL server is not running or not accessible.";
+    }
+    
+    if (message.includes("timed out")) {
+      return "Evaluation timed out. The expression may be too complex or caused an infinite loop.";
+    }
+    
+    if (message.toLowerCase().includes("syntax error")) {
+      return `Syntax error: ${message.split(":").pop()?.trim() || message}`;
+    }
+    
+    return message;
+  }
+
+  /**
+   * Evaluate the current expression under cursor with improved UI feedback
    */
   public async evaluateExpression(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
@@ -83,8 +137,8 @@ export class EvaluationManager {
       return;
     }
 
-    // Show a "busy" indicator immediately
-    ui.showInlineEvaluation(editor, vsCodeRange, "Evaluating...");
+    // Show a "busy" indicator immediately with subtle animation
+    ui.showInlineEvaluation(editor, vsCodeRange, "Evaluating...", code);
     
     // Create an AbortController for this request
     const abortController = new AbortController();
@@ -94,7 +148,7 @@ export class EvaluationManager {
     try {
       // Check if the REPL server is running
       if (!await this.ensureServerRunning()) {
-        ui.showInlineError(editor, vsCodeRange, "REPL server not running");
+        ui.showInlineError(editor, vsCodeRange, "nREPL server not connected", code);
         this.activeEvaluations.delete(requestId);
         return;
       }
@@ -107,7 +161,11 @@ export class EvaluationManager {
         return;
       }
       
-      ui.showInlineEvaluation(editor, vsCodeRange, result);
+      // Store the result for potential reuse
+      this.lastResults.set(requestId, { code, result, success: true });
+      
+      // Show the evaluation result
+      ui.showInlineEvaluation(editor, vsCodeRange, result, code);
       logger.debug(`Evaluated expression: ${code} => ${result}`);
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -115,9 +173,14 @@ export class EvaluationManager {
         return;
       }
       
-      ui.showInlineError(editor, vsCodeRange, err.message || String(err));
-      ui.showError(`Evaluation Error: ${err.message || err}`);
-      logger.error(`Evaluation error: ${err.message || err}`);
+      // Format the error message for better readability
+      const errorMessage = this.formatErrorMessage(err);
+      
+      // Store the error for potential reuse
+      this.lastResults.set(requestId, { code, result: errorMessage, success: false });
+      
+      ui.showInlineError(editor, vsCodeRange, errorMessage, code);
+      logger.error(`Evaluation error: ${errorMessage}`);
     } finally {
       this.activeEvaluations.delete(requestId);
     }
@@ -148,7 +211,7 @@ export class EvaluationManager {
     }
 
     // Show a "busy" indicator immediately
-    ui.showInlineEvaluation(editor, vsCodeRange, "Evaluating...");
+    ui.showInlineEvaluation(editor, vsCodeRange, "Evaluating...", code);
     
     // Create an AbortController for this request
     const abortController = new AbortController();
@@ -158,7 +221,7 @@ export class EvaluationManager {
     try {
       // Check if the REPL server is running
       if (!await this.ensureServerRunning()) {
-        ui.showInlineError(editor, vsCodeRange, "REPL server not running");
+        ui.showInlineError(editor, vsCodeRange, "nREPL server not connected", code);
         this.activeEvaluations.delete(requestId);
         return;
       }
@@ -171,7 +234,10 @@ export class EvaluationManager {
         return;
       }
       
-      ui.showInlineEvaluation(editor, vsCodeRange, result);
+      // Store the result for potential reuse
+      this.lastResults.set(requestId, { code, result, success: true });
+      
+      ui.showInlineEvaluation(editor, vsCodeRange, result, code);
       logger.debug(`Evaluated outermost expression: ${code} => ${result}`);
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -179,9 +245,14 @@ export class EvaluationManager {
         return;
       }
       
-      ui.showInlineError(editor, vsCodeRange, err.message || String(err));
-      ui.showError(`Evaluation Error: ${err.message || err}`);
-      logger.error(`Evaluation error: ${err.message || err}`);
+      // Format the error message for better readability
+      const errorMessage = this.formatErrorMessage(err);
+      
+      // Store the error for potential reuse
+      this.lastResults.set(requestId, { code, result: errorMessage, success: false });
+      
+      ui.showInlineError(editor, vsCodeRange, errorMessage, code);
+      logger.error(`Evaluation error: ${errorMessage}`);
     } finally {
       this.activeEvaluations.delete(requestId);
     }
