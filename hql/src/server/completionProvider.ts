@@ -60,6 +60,8 @@ export class CompletionProvider {
         end: position
       });
       
+      console.log(`[HQL Completion] Prefix: "${linePrefix}"`);
+      
       const fullText = document.getText();
       
       // Get the current line
@@ -67,9 +69,8 @@ export class CompletionProvider {
         start: { line: position.line, character: 0 },
         end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
       });
-  
+      
       // Special case for import 'from' followed by dot, even when no symbol is between import and from
-      // This matches both: (import from ".") and (import [sym] from ".")
       const importFromDotMatch = linePrefix.match(/import\s+(?:\[[^\]]*\]|\s*|[a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(['"])(\.*)(["']?)$/);
       if (importFromDotMatch) {
         const [_, quoteType, dotPrefix, endQuote] = importFromDotMatch;
@@ -220,6 +221,31 @@ export class CompletionProvider {
           }
         }
         
+        // Check if we're in a direct function call with dot
+        const directFunctionDotMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+\.$/);
+        if (directFunctionDotMatch) {
+          const funcName = directFunctionDotMatch[1];
+          
+          // Find function symbol
+          const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+          const functionSymbol = symbols.find(s => 
+            (s.kind === 12 || s.kind === 6) && // Function or Method
+            s.name === funcName
+          );
+          
+          // Check if function has an enum parameter as first param
+          if (functionSymbol && 
+              functionSymbol.data?.params && 
+              functionSymbol.data.params.length > 0) {
+            
+            const firstParam = functionSymbol.data.params[0];
+            if (firstParam.type && this.symbolManager.isEnumType(firstParam.type)) {
+              // Return enum values for this parameter
+              return this.getEnumValueCompletions(document, firstParam.type, true);
+            }
+          }
+        }
+        
         // Generic enum case completions if specific context not found
         return this.getAllEnumCaseCompletions(document);
       }
@@ -228,8 +254,11 @@ export class CompletionProvider {
       const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s*$/);
       if (funcCallMatch) {
         const functionName = funcCallMatch[1];
+        console.log(`[HQL Completion] Function call detected: ${functionName}`);
         const paramCompletions = this.getParameterCompletions(document, functionName);
+        console.log(`[HQL Completion] Parameter completions count: ${paramCompletions.length}`);
         if (paramCompletions.length > 0) {
+          console.log(`[HQL Completion] Returning parameter completions for ${functionName}`);
           return paramCompletions;
         }
       }
@@ -237,18 +266,24 @@ export class CompletionProvider {
       // Check for named parameter in function call: (functionName param: |
       const namedParamMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s*$/);
       if (namedParamMatch) {
+        console.log(`[HQL Completion] Named parameter context detected`);
         // Extract function and parameter name to provide type-specific completions
         const funcParamParts = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
         if (funcParamParts) {
           const [_, funcName, paramName] = funcParamParts;
+          console.log(`[HQL Completion] Function: ${funcName}, Parameter: ${paramName}`);
           // Check if we should return enum values first
           const enumCompletions = this.getParameterEnumValueCompletions(document, funcName, paramName);
+          console.log(`[HQL Completion] Enum completions count: ${enumCompletions.length}`);
           if (enumCompletions.length > 0) {
+            console.log(`[HQL Completion] Returning enum completions for ${paramName}`);
             return enumCompletions;
           }
           
           // Otherwise fall back to regular parameter value completions
-          return this.getParameterValueCompletions(document, funcName, paramName);
+          const valueCompletions = this.getParameterValueCompletions(document, funcName, paramName);
+          console.log(`[HQL Completion] Parameter value completions count: ${valueCompletions.length}`);
+          return valueCompletions;
         }
       }
       
@@ -333,6 +368,8 @@ export class CompletionProvider {
       paramName: string,
       shorthandDotNotation: boolean = false
     ): CompletionItem[] {
+      console.log(`[HQL Completion] getParameterEnumValueCompletions called for function: ${functionName}, param: ${paramName}`);
+      
       // Find the function in document symbols
       const symbols = this.symbolManager.getDocumentSymbols(document.uri);
       const functionSymbol = symbols.find(s => 
@@ -342,14 +379,27 @@ export class CompletionProvider {
       
       // If we can't find the function or it has no parameters, return empty
       if (!functionSymbol || !functionSymbol.data?.params) {
+        console.log(`[HQL Completion] Function symbol not found or has no params`);
         return [];
       }
       
       // Find the specific parameter
       const param = functionSymbol.data.params.find(p => p.name === paramName);
       if (!param || !param.type) {
+        console.log(`[HQL Completion] Parameter ${paramName} not found or has no type`);
+        // If no exact parameter match, check if this is the first parameter position
+        // and function has any parameters that are enums
+        if (functionSymbol.data.params.length > 0) {
+          const firstParam = functionSymbol.data.params[0];
+          if (firstParam.type && this.symbolManager.isEnumType(firstParam.type)) {
+            console.log(`[HQL Completion] Using first parameter as fallback: ${firstParam.name}: ${firstParam.type}`);
+            return this.getEnumValueCompletions(document, firstParam.type, shorthandDotNotation);
+          }
+        }
         return [];
       }
+      
+      console.log(`[HQL Completion] Found parameter ${paramName}: ${param.type}`);
       
       // Check if parameter is an enum type
       const enumType = symbols.find(s => 
@@ -358,10 +408,18 @@ export class CompletionProvider {
       );
       
       if (enumType) {
+        console.log(`[HQL Completion] Found enum type symbol for ${param.type}`);
         // Return enum case completions
         return this.getEnumValueCompletions(document, param.type, shorthandDotNotation);
       }
       
+      // Try to check directly with symbol manager
+      if (this.symbolManager.isEnumType(param.type)) {
+        console.log(`[HQL Completion] Symbol manager confirms ${param.type} is an enum type`);
+        return this.getEnumValueCompletions(document, param.type, shorthandDotNotation);
+      }
+      
+      console.log(`[HQL Completion] ${param.type} is not detected as an enum type`);
       return [];
     }
     
@@ -526,7 +584,31 @@ export class CompletionProvider {
       }
     }
     
-    // 2. Check for direct enum type reference (Type.case)
+    // 2. Check for direct function call with dot: (install .)
+    const directFunctionCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+\.$/);
+    if (directFunctionCallMatch) {
+      const [_, funcName] = directFunctionCallMatch;
+      
+      // Find function symbol
+      const functionSymbol = symbols.find(s => 
+        (s.kind === 12 || s.kind === 6) && // Function or Method
+        s.name === funcName
+      );
+      
+      // Check if function has parameters and the first one is an enum
+      if (functionSymbol && 
+          functionSymbol.data?.params && 
+          functionSymbol.data.params.length > 0) {
+        
+        const firstParam = functionSymbol.data.params[0];
+        if (firstParam.type && this.symbolManager.isEnumType(firstParam.type)) {
+          // If first parameter is an enum, show its cases
+          return this.getEnumValueCompletions(document, firstParam.type, true);
+        }
+      }
+    }
+    
+    // 3. Check for direct enum type reference (Type.case)
     const enumMatch = beforeDot.match(/([A-Za-z_][A-Za-z0-9_]*)$/);
     if (enumMatch) {
       const [_, typeName] = enumMatch;
@@ -538,73 +620,7 @@ export class CompletionProvider {
       );
       
       if (enumType) {
-        return this.getEnumValueCompletions(document, typeName);
-      }
-    }
-    
-    // 3. Try to parse current expression for better context
-    const currentExpression = getCurrentExpression(document, position);
-    if (currentExpression) {
-      const adaptedDoc = createTextDocumentAdapter(document);
-      
-      // 3.1 Check for parameter type annotations in the current expression
-      const paramTypeAnnotationMatch = beforeDot.match(/(\w+)\s*:\s*(\w+)$/);
-      if (paramTypeAnnotationMatch) {
-        const [_, paramName, typeName] = paramTypeAnnotationMatch;
-        
-        // Find if this type is an enum
-        const enumType = symbols.find(s => 
-          s.kind === 10 && // Enum
-          s.name === typeName
-        );
-        
-        if (enumType) {
-          return this.getEnumValueCompletions(document, typeName);
-        }
-      }
-      
-      // 3.2 Check for usage in equality expression (= .enumCase var)
-      const equalityMatch = currentLine.match(/\(\s*=\s+\.\s*$/);
-      if (equalityMatch) {
-        // This could be an enum comparison, try to find the enum type from context
-        if (isList(currentExpression) && currentExpression.elements.length >= 2) {
-          const op = currentExpression.elements[0];
-          if (isSymbol(op) && op.name === "=") {
-            // We're in an equality comparison - try to find enum types in siblings
-            for (let i = 1; i < currentExpression.elements.length; i++) {
-              const element = currentExpression.elements[i];
-              
-              // Skip the current "." element
-              if (isSymbol(element) && element.name === ".") continue;
-              
-              if (isSymbol(element)) {
-                // Check if this symbol is a variable with an enum type
-                const varSymbol = symbols.find(s => 
-                  s.kind === 13 && // Variable
-                  s.name === element.name &&
-                  s.data?.type
-                );
-                
-                if (varSymbol && this.symbolManager.isEnumType(varSymbol.data!.type!)) {
-                  return this.getEnumValueCompletions(document, varSymbol.data!.type!, true);
-                }
-                
-                // Check if this symbol is itself an enum type
-                const enumType = symbols.find(s => 
-                  s.kind === 10 && // Enum
-                  s.name === element.name
-                );
-                
-                if (enumType) {
-                  return this.getEnumValueCompletions(document, element.name, true);
-                }
-              }
-            }
-          }
-        }
-        
-        // If we couldn't determine a specific enum type, show all enum cases as a fallback
-        return this.getAllEnumCaseCompletions(document);
+        return this.getEnumValueCompletions(document, typeName, true);
       }
     }
     
@@ -628,25 +644,37 @@ export class CompletionProvider {
     // 5. If we're in a function parameter list, don't show unrelated enum completions
     const inParamListMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[^)]*\.$/);
     if (inParamListMatch) {
-      // We're likely in a function parameter list, don't show general enum completions
-      return [];
-    }
-    
-    // 6. Check for JS object methods/properties instead of enums
-    const qualifiedNameMatch = beforeDot.match(/([a-zA-Z_][a-zA-Z0-9_]*)$/);
-    if (qualifiedNameMatch) {
-      const [_, objName] = qualifiedNameMatch;
-      
-      // Check if this could be a JavaScript object
-      if (['console', 'Math', 'JSON', 'Object', 'Array', 'String'].includes(objName)) {
-        // Don't show enum completions for JS objects - handled by other methods
-        return [];
+      // Try to extract function name
+      const funcMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+/);
+      if (funcMatch) {
+        const funcName = funcMatch[1];
+        
+        // Find function symbol
+        const functionSymbol = symbols.find(s => 
+          (s.kind === 12 || s.kind === 6) && // Function or Method
+          s.name === funcName
+        );
+        
+        if (functionSymbol && 
+            functionSymbol.data?.params && 
+            functionSymbol.data.params.length > 0) {
+          
+          // If dot is used in position where enum parameter would be expected,
+          // return all enum cases that would be valid for any parameter of this function
+          const enumParams = functionSymbol.data.params
+            .filter(p => p.type && this.symbolManager.isEnumType(p.type));
+          
+          if (enumParams.length > 0) {
+            // Get completions for first enum parameter
+            return this.getEnumValueCompletions(document, enumParams[0].type!, true);
+          }
+        }
       }
     }
     
-    // 7. Special handling for shorthand dot notation in specific contexts
+    // 6. Special handling for shorthand dot notation in specific contexts
     // If we're at the start of an argument list, suggest all enum cases
-    const startOfArg = linePrefix.match(/[\(,]\s*\.\s*$/);
+    const startOfArg = linePrefix.match(/[\(,]\s*\.$/);
     if (startOfArg) {
       return this.getAllEnumCaseCompletions(document);
     }
@@ -834,10 +862,14 @@ export class CompletionProvider {
         // Clone the item so we don't modify the cached version
         const newItem = { ...item };
         
-        // For shorthand dot notation, we don't need the dot prefix
-        if (!shorthandDotNotation) {
+        if (shorthandDotNotation) {
+          // For shorthand dot notation, we just need the case name
           newItem.label = item.label;
-          newItem.insertText = item.insertText || item.label;
+          newItem.insertText = item.label;
+        } else {
+          // For regular notation, use proper enum format: EnumType.CaseName
+          newItem.label = item.label;
+          newItem.insertText = `${enumType}.${item.label}`;
         }
         
         // High priority sorting for enum values
@@ -880,7 +912,7 @@ export class CompletionProvider {
             kind: MarkupKind.Markdown,
             value: enumMember.data?.documentation || `Enum case from \`${enumType}\``
           },
-          insertText: caseName,
+          insertText: shorthandDotNotation ? caseName : `${enumType}.${caseName}`,
           sortText: `00-${caseName}`, // High priority for enum values
           data: {
             enumName: enumType,
@@ -925,7 +957,7 @@ export class CompletionProvider {
                         kind: MarkupKind.Markdown,
                         value: `Enum case from \`${enumType}\``
                       },
-                      insertText: caseName.name,
+                      insertText: shorthandDotNotation ? caseName.name : `${enumType}.${caseName.name}`,
                       sortText: `00-${caseName.name}`,
                       data: {
                         enumName: enumType,
@@ -957,6 +989,8 @@ export class CompletionProvider {
    * Provides comprehensive function call patterns based on function signature
    */
   private getParameterCompletions(document: TextDocument, funcName: string): CompletionItem[] {
+    console.log(`[HQL Completion] getParameterCompletions called for function: ${funcName}`);
+    
     // Find the function in document symbols
     const symbols = this.symbolManager.getDocumentSymbols(document.uri);
     const functionSymbol = symbols.find(s => 
@@ -966,10 +1000,17 @@ export class CompletionProvider {
     
     // If we can't find the function or it has no parameters, return empty
     if (!functionSymbol || !functionSymbol.data?.params) {
+      console.log(`[HQL Completion] Function symbol not found or has no params`);
       return [];
     }
     
-    const params = functionSymbol.data.params;
+    console.log(`[HQL Completion] Function found with params:`, JSON.stringify(functionSymbol.data.params));
+    
+    // Fix the parameters if they have colons in their names
+    const fixedParams = this.fixParameterTypes(functionSymbol.data.params);
+    console.log(`[HQL Completion] Fixed params:`, JSON.stringify(fixedParams));
+    
+    const params = fixedParams;
     const returnType = functionSymbol.data.returnType || 'Any';
     // Check if this is an fx function based on the isFx flag
     const isFx = functionSymbol.data?.isFx || false;
@@ -981,275 +1022,114 @@ export class CompletionProvider {
     
     const completions: CompletionItem[] = [];
     
-    // 1. Add individual named parameter completions - ONLY VALID ONES
-    if (allParamsHaveDefaults) {
-      // If all params have defaults, every parameter can be specified individually
+    // 1. Add enum value completions first (highest priority)
+    if (params.length > 0) {
+      // Check for enum parameters and prioritize them
+      for (const param of params) {
+        if (param.type && this.symbolManager.isEnumType(param.type)) {
+          console.log(`[HQL Completion] Parameter ${param.name} is enum type: ${param.type}`);
+          
+          // Get enum values for this type
+          const enumCompletions = this.getEnumValueCompletions(document, param.type, false);
+          console.log(`[HQL Completion] Found ${enumCompletions.length} enum values for ${param.type}`);
+          
+          // Format them as parameter values
+          const formattedEnumCompletions = enumCompletions.map(comp => {
+            const item: CompletionItem = {
+              label: `${param.name}: ${comp.label}`,
+              kind: CompletionItemKind.EnumMember,
+              detail: `Set ${param.name} to ${comp.label} (${param.type})`,
+              documentation: comp.documentation,
+              insertText: `${param.name}: ${comp.insertText || comp.label}`,
+              sortText: `01-enum-${comp.label}`, // Highest priority
+              insertTextFormat: InsertTextFormat.PlainText
+            };
+            return item;
+          });
+          
+          completions.push(...formattedEnumCompletions);
+          
+          // Also add shorthand dot notation for the enum param
+          completions.push({
+            label: `${param.name}: .`,
+            kind: CompletionItemKind.Snippet,
+            detail: `Use shorthand dot notation for ${param.type} enum values`,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: `Shorthand dot notation for enum values. Type a dot to see available cases.`
+            },
+            insertText: `${param.name}: .`,
+            sortText: `02-enum-dot`, // Second priority
+            insertTextFormat: InsertTextFormat.PlainText,
+            command: {
+              title: 'Trigger Suggestions',
+              command: 'editor.action.triggerSuggest'
+            }
+          });
+        }
+      }
+    }
+    
+    // 2. Named parameters (third priority)
+    if (params.length > 0) {
+      const namedItems = params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ');
+      completions.push({
+        label: `named parameters: ${namedItems}`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Complete call with named arguments: (${funcName} ${namedItems})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with all parameters in named style.`
+        },
+        sortText: `03-named`, // Third priority
+        insertText: namedItems,
+        insertTextFormat: InsertTextFormat.PlainText
+      });
+    }
+    
+    // 3. Individual parameter completions - lower priority
+    if (allParamsHaveDefaults || requiredParams.length === 1) {
+      // If all params have defaults, or there's just one required param, we can offer named params
       params.forEach(param => {
-        // Create named parameter completion
-        const placeholder = param.type || 'value';
+        // Create named parameter completion with correct type
         const item: CompletionItem = {
-          label: `${param.name}:`,
+          label: `${param.name}: ${param.type || 'Any'}`,
           kind: CompletionItemKind.Property,
           detail: `Parameter: ${param.type || 'Any'}${param.defaultValue ? ` = ${param.defaultValue}` : ''}`,
           documentation: {
             kind: MarkupKind.Markdown,
             value: `Named parameter for \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
           },
-          sortText: `10-${param.name}`,
-          insertText: `${param.name}: \${1:${placeholder}}`,
-          insertTextFormat: InsertTextFormat.Snippet
+          sortText: `04-param-${param.name}`, // Fourth priority
+          insertText: `${param.name}: ${param.type || 'Any'}`,
+          insertTextFormat: InsertTextFormat.PlainText
         };
         
         completions.push(item);
+        console.log(`[HQL Completion] Added parameter completion: ${param.name}: ${param.type || 'Any'}`);
       });
-    } else if (requiredParams.length === 1 && optionalParams.length > 0) {
-      // Special case: one required parameter + optional ones
-      // We can offer just the required parameter as a valid named completion
-      const param = requiredParams[0];
-      const placeholder = param.type || 'value';
-      const item: CompletionItem = {
-        label: `${param.name}:`,
-        kind: CompletionItemKind.Property,
-        detail: `Required parameter: ${param.type || 'Any'}`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Required named parameter for \`${funcName}\``
-        },
-        sortText: `05-${param.name}`,
-        insertText: `${param.name}: \${1:${placeholder}}`,
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(item);
     }
     
-    // 2. Full function call with positional arguments (all parameters)
+    // 4. Positional parameters (lowest priority)
     if (params.length > 0) {
-      const positionalSnippet = params.map((p, i) => {
-        const placeholder = p.type || 'value';
-        return `\${${i+1}:${placeholder}}`;
-      }).join(' ');
-      
-      const positionalCall: CompletionItem = {
-        label: `[positional]`,
+      // Positional
+      const positionalItems = params.map(p => p.type || 'Any').join(' ');
+      completions.push({
+        label: `positional parameters: ${positionalItems}`,
         kind: CompletionItemKind.Snippet,
-        detail: `Complete call with positional arguments: (${funcName} ${params.map(p => p.type || 'Any').join(' ')})${returnType ? ` -> ${returnType}` : ''}`,
+        detail: `Complete call with positional arguments: (${funcName} ${positionalItems})`,
         documentation: {
           kind: MarkupKind.Markdown,
-          value: `Complete function call with all parameters in positional style.\n\nSignature: \`(${funcName} ${params.map(p => p.type || 'Any').join(' ')})\``
+          value: `Complete function call with all parameters in positional style.`
         },
-        sortText: '01-all-positional',
-        insertText: positionalSnippet,
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(positionalCall);
-    }
-    
-    // 3. Full function call with named arguments (all parameters)
-    if (params.length > 0) {
-      const namedSnippet = params.map((p, i) => {
-        const placeholder = p.type || 'value';
-        return `${p.name}: \${${i+1}:${placeholder}}`;
-      }).join(' ');
-      
-      const namedCall: CompletionItem = {
-        label: `[named]`,
-        kind: CompletionItemKind.Snippet,
-        detail: `Complete call with named arguments: (${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Complete function call with all parameters in named style.\n\nSignature: \`(${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-        },
-        sortText: '02-all-named',
-        insertText: namedSnippet,
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(namedCall);
-    }
-    
-    // 4. Named parameters in alternate order (if there are multiple parameters)
-    if (params.length > 1) {
-      const reversedParams = [...params].reverse();
-      const reversedNamedSnippet = reversedParams.map((p, i) => {
-        const placeholder = p.type || 'value';
-        return `${p.name}: \${${reversedParams.length-i}:${placeholder}}`;
-      }).join(' ');
-      
-      const reversedNamedCall: CompletionItem = {
-        label: `[named - alt order]`,
-        kind: CompletionItemKind.Snippet,
-        detail: `Call with named arguments in alternate order: (${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call with named parameters in alternate order.\n\nSignature: \`(${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-        },
-        sortText: '03-named-reverse',
-        insertText: reversedNamedSnippet,
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(reversedNamedCall);
-    }
-    
-    // 5. If some parameters have defaults, add call patterns with just required parameters
-    if (requiredParams.length > 0 && optionalParams.length > 0) {
-      // Positional style (required only)
-      const requiredPositionalSnippet = requiredParams.map((p, i) => {
-        const placeholder = p.type || 'value';
-        return `\${${i+1}:${placeholder}}`;
-      }).join(' ');
-      
-      const requiredPositionalCall: CompletionItem = {
-        label: `[required only]`,
-        kind: CompletionItemKind.Snippet,
-        detail: `Call with required parameters only: (${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call with only required parameters in positional style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})\``
-        },
-        sortText: '04-required-positional',
-        insertText: requiredPositionalSnippet,
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(requiredPositionalCall);
-      
-      // Named style (required only)
-      if (requiredParams.length > 0) {
-        const requiredNamedSnippet = requiredParams.map((p, i) => {
-          const placeholder = p.type || 'value';
-          return `${p.name}: \${${i+1}:${placeholder}}`;
-        }).join(' ');
-        
-        const requiredNamedCall: CompletionItem = {
-          label: `[required named]`,
-          kind: CompletionItemKind.Snippet,
-          detail: `Call with required parameters only (named): (${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `Function call with only required parameters in named style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-          },
-          sortText: '05-required-named',
-          insertText: requiredNamedSnippet,
-          insertTextFormat: InsertTextFormat.Snippet
-        };
-        completions.push(requiredNamedCall);
-      }
-    }
-    
-    // 6. If all parameters have defaults, add empty call pattern
-    if (allParamsHaveDefaults) {
-      const emptyCall: CompletionItem = {
-        label: `[empty]`,
-        kind: CompletionItemKind.Snippet,
-        detail: `Call with all default values: (${funcName})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call using all default parameter values.\n\nAll parameters have defaults: ${params.map(p => `${p.name} = ${p.defaultValue}`).join(', ')}`
-        },
-        sortText: '06-empty',
-        insertText: '',
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(emptyCall);
-    }
-    
-    // 7. Add placeholder pattern with underscores for defaults
-    if (optionalParams.length > 0 && requiredParams.length > 0) {
-      // Create a pattern with _ for defaults and placeholders for required
-      const placeholderItems = params.map((p, i) => {
-        if (p.defaultValue) {
-          return '_';
-        } else {
-          const placeholder = p.type || 'value'; 
-          return `\${${i+1}:${placeholder}}`;
-        }
+        sortText: `05-positional`, // Lowest priority
+        insertText: positionalItems,
+        insertTextFormat: InsertTextFormat.PlainText
       });
-      
-      // Only add if we have at least one underscore
-      if (placeholderItems.some(item => item === '_')) {
-        const placeholderSnippet = placeholderItems.join(' ');
-        const placeholderCall: CompletionItem = {
-          label: `[placeholder]`,
-          kind: CompletionItemKind.Snippet,
-          detail: `Call with placeholders: (${funcName} ${placeholderItems.join(' ')})`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `Function call using underscores for default parameters.\n\nUnderscore \`_\` indicates parameters that will use their default values.`
-          },
-          sortText: '07-placeholder',
-          insertText: placeholderSnippet,
-          insertTextFormat: InsertTextFormat.Snippet
-        };
-        completions.push(placeholderCall);
-      }
+      console.log(`[HQL Completion] Added positional completion: ${positionalItems}`);
     }
     
-    // 8. Special patterns for one required parameter with defaults
-    if (requiredParams.length === 1 && optionalParams.length > 0) {
-      // Mixed pattern: first parameter positional, other parameters named
-      const firstParam = requiredParams[0];
-      const firstParamPlaceholder = firstParam.type || 'value';
-      const mixedSnippets = optionalParams.map((p, i) => {
-        const placeholder = p.type || 'value';
-        return `${p.name}: \${${i+2}:${placeholder}}`;
-      });
-      
-      const mixedPattern = `\${1:${firstParamPlaceholder}} ${mixedSnippets.join(' ')}`;
-      const mixedCall: CompletionItem = {
-        label: `[mixed style]`,
-        kind: CompletionItemKind.Snippet,
-        detail: `Call with mixed style: (${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call with mixed style: first parameter positional, others named.\n\nSignature: \`(${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-        },
-        sortText: '08-mixed',
-        insertText: mixedPattern,
-        insertTextFormat: InsertTextFormat.Snippet
-      };
-      completions.push(mixedCall);
-    }
-    
-    // 9. Add special Boolean type completions if parameter is Boolean
-    params.forEach(param => {
-      if (param.type && (param.type.toLowerCase() === 'bool' || param.type.toLowerCase() === 'boolean')) {
-        // Only add direct boolean completions for parameters that would be valid on their own
-        // Either all params have defaults, or this is the only required parameter
-        if (allParamsHaveDefaults || 
-            (requiredParams.length === 1 && 
-             requiredParams[0].name === param.name && 
-             optionalParams.length > 0)) {
-          
-          // Add true/false direct completions for boolean parameters
-          const trueCompletion: CompletionItem = {
-            label: `${param.name}: true`,
-            kind: CompletionItemKind.Value,
-            detail: `Set ${param.name} to true`,
-            documentation: {
-              kind: MarkupKind.Markdown,
-              value: `Set boolean parameter \`${param.name}\` to \`true\``
-            },
-            sortText: `20-${param.name}-true`,
-            insertText: `${param.name}: true`,
-            insertTextFormat: InsertTextFormat.Snippet
-          };
-          
-          const falseCompletion: CompletionItem = {
-            label: `${param.name}: false`,
-            kind: CompletionItemKind.Value,
-            detail: `Set ${param.name} to false`,
-            documentation: {
-              kind: MarkupKind.Markdown,
-              value: `Set boolean parameter \`${param.name}\` to \`false\``
-            },
-            sortText: `21-${param.name}-false`,
-            insertText: `${param.name}: false`,
-            insertTextFormat: InsertTextFormat.Snippet
-          };
-          
-          completions.push(trueCompletion, falseCompletion);
-        }
-      }
-    });
-    
+    console.log(`[HQL Completion] Returning ${completions.length} total completions`);
     return completions;
   }
   
@@ -1707,7 +1587,7 @@ export class CompletionProvider {
       // For functions (fn/fx), generate multiple calling pattern completions
       if (symbol.kind === 12 || symbol.kind === 6) { // Function or Method
         // Generate function call patterns
-        const functionCompletions = this.generateFunctionCallCompletions(symbol);
+        const functionCompletions = this.generateFunctionCallCompletions(document, position, symbol.name);
         if (functionCompletions.length > 0) {
           completions.push(...functionCompletions);
           continue; // Skip the default completion for this function
@@ -1760,317 +1640,134 @@ export class CompletionProvider {
   /**
    * Generate multiple function call pattern completions for a function symbol
    */
-  private generateFunctionCallCompletions(symbol: ExtendedSymbolInformation): CompletionItem[] {
-    const completions: CompletionItem[] = [];
-    const funcName = symbol.name;
+  private generateFunctionCallCompletions(
+    document: TextDocument, 
+    position: Position, 
+    funcName: string
+  ): CompletionItem[] {
+    console.log(`[HQL Completion] generateFunctionCallCompletions called for function: ${funcName}`);
     
-    // Skip if no parameter data
-    if (!symbol.data?.params) {
-      // Add basic completion with empty parentheses
-      completions.push({
+    // 1. Find the function in document symbols
+    const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+    const functionSymbol = symbols.find(s => 
+      (s.kind === 12 || s.kind === 6) && // Function or Method
+      s.name === funcName
+    );
+    
+    // If we can't find the function, return just a basic completion
+    if (!functionSymbol) {
+      console.log(`[HQL Completion] Function symbol not found`);
+      return [{
         label: funcName,
         kind: CompletionItemKind.Function,
-        detail: `Function: ${funcName}`,
-        documentation: symbol.data?.documentation ? {
-          kind: MarkupKind.Markdown,
-          value: symbol.data.documentation
-        } : undefined,
-        insertText: `(${funcName} \${0})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `01-${funcName}`
-      });
-      return completions;
+        insertText: funcName,
+        sortText: `05-${funcName}`, // Lowest priority
+        insertTextFormat: InsertTextFormat.PlainText
+      }];
     }
     
-    const params = symbol.data.params;
-    const returnType = symbol.data.returnType || 'Any';
-    const isFx = symbol.data?.isFx || false;
+    // 2. Get the parameters for the function
+    let params = functionSymbol.data?.params || [];
+    console.log(`[HQL Completion] Function parameters:`, JSON.stringify(params));
     
-    // Check which parameters are required vs optional (have default values)
-    const requiredParams = params.filter(p => !p.defaultValue);
-    const optionalParams = params.filter(p => p.defaultValue);
-    const allParamsHaveDefaults = requiredParams.length === 0 && optionalParams.length > 0;
+    // Fix parameters that may have colons in their names
+    params = this.fixParameterTypes(params);
+    console.log(`[HQL Completion] Fixed parameters:`, JSON.stringify(params));
     
-    // 1. Basic function name completion (most common)
-    const basicCompletion: CompletionItem = {
+    const completions: CompletionItem[] = [];
+    
+    // 3. Generate completions for enum parameters
+    let hasEnumParams = false;
+    
+    for (const param of params) {
+      if (param.type && this.symbolManager.isEnumType(param.type)) {
+        hasEnumParams = true;
+        console.log(`[HQL Completion] Found enum parameter: ${param.name} of type ${param.type}`);
+        
+        // Add shorthand dot notation completion
+        completions.push({
+          label: `${funcName} (${param.name}: .)`,
+          kind: CompletionItemKind.Snippet,
+          detail: `Call with ${param.name} using shorthand enum notation`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Use \`.CaseName\` shorthand for enum \`${param.type}\``
+          },
+          insertText: `${funcName} (${param.name}: .)`,
+          sortText: `01-${funcName}-enum-dot`, // Highest priority
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestions',
+            command: 'editor.action.triggerSuggest'
+          }
+        });
+        
+        // Add qualified name completion
+        completions.push({
+          label: `${funcName} (${param.name}: ${param.type}.)`,
+          kind: CompletionItemKind.Snippet,
+          detail: `Call with ${param.name} using qualified enum name`,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `Use \`${param.type}.CaseName\` qualified name for enum \`${param.type}\``
+          },
+          insertText: `${funcName} (${param.name}: ${param.type}.)`,
+          sortText: `02-${funcName}-enum-qualified`, // Second priority
+          insertTextFormat: InsertTextFormat.PlainText,
+          command: {
+            title: 'Trigger Suggestions',
+            command: 'editor.action.triggerSuggest'
+          }
+        });
+      }
+    }
+    
+    // 4. Add named parameters completion
+    if (params.length > 0) {
+      const namedParams = params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ');
+      
+      completions.push({
+        label: `${funcName} (named)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Call with named parameters: ${funcName} (${namedParams})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with named parameters.`
+        },
+        insertText: `${funcName} (${namedParams})`,
+        sortText: `03-${funcName}-named`, // Third priority
+        insertTextFormat: InsertTextFormat.PlainText
+      });
+    }
+    
+    // 5. Add positional parameters completion
+    if (params.length > 0) {
+      const positionalParams = params.map(p => p.type || 'Any').join(' ');
+      
+      completions.push({
+        label: `${funcName} (positional)`,
+        kind: CompletionItemKind.Snippet,
+        detail: `Call with positional parameters: ${funcName} (${positionalParams})`,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: `Complete function call with positional parameters.`
+        },
+        insertText: `${funcName} (${positionalParams})`,
+        sortText: `04-${funcName}-positional`, // Fourth priority
+        insertTextFormat: InsertTextFormat.PlainText
+      });
+    }
+    
+    // 6. Add basic function name completion (lowest priority)
+    completions.push({
       label: funcName,
       kind: CompletionItemKind.Function,
-      detail: `${isFx ? 'Pure function' : 'Function'}: (${funcName} ${params.map(p => 
-        p.defaultValue 
-          ? `${p.name}: ${p.type || 'Any'} = ${p.defaultValue}` 
-          : `${p.name}: ${p.type || 'Any'}`
-      ).join(' ')})${returnType ? ` -> ${returnType}` : ''}`,
-      documentation: {
-        kind: MarkupKind.Markdown,
-        value: symbol.data?.documentation || `Function \`${funcName}\``
-      },
-      insertText: `(${funcName} \${0})`,
-      insertTextFormat: InsertTextFormat.Snippet,
-      sortText: `01-${funcName}`,
-      data: {
-        isFx,
-        returnType
-      }
-    };
-    completions.push(basicCompletion);
+      insertText: funcName,
+      sortText: `05-${funcName}`, // Lowest priority
+      insertTextFormat: InsertTextFormat.PlainText
+    });
     
-    // 2. Full function call with positional arguments (all parameters)
-    if (params.length > 0) {
-      const positionalSnippet = params.map((p, i) => `\${${i+1}:${p.type || 'value'}}`).join(' ');
-      const positionalCall: CompletionItem = {
-        label: `${funcName} (positional params)`,
-        kind: CompletionItemKind.Snippet,
-        detail: `(${funcName} ${params.map(p => p.type || 'Any').join(' ')})${returnType ? ` -> ${returnType}` : ''}`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Complete function call with all parameters in positional style.\n\nSignature: \`(${funcName} ${params.map(p => p.type || 'Any').join(' ')})\``
-        },
-        insertText: `(${funcName} ${positionalSnippet})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `02-${funcName}`,
-        data: {
-          isFx,
-          returnType,
-          style: 'positional'
-        }
-      };
-      completions.push(positionalCall);
-    }
-    
-    // 3. Full function call with named arguments (all parameters)
-    if (params.length > 0) {
-      const namedSnippet = params.map((p, i) => `${p.name}: \${${i+1}:${p.type || 'value'}}`).join(' ');
-      const namedCall: CompletionItem = {
-        label: `${funcName} (named params)`,
-        kind: CompletionItemKind.Snippet,
-        detail: `(${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Complete function call with all parameters in named style.\n\nSignature: \`(${funcName} ${params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-        },
-        insertText: `(${funcName} ${namedSnippet})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `03-${funcName}`,
-        data: {
-          isFx,
-          returnType,
-          style: 'named'
-        }
-      };
-      completions.push(namedCall);
-    }
-    
-    // 4. Named parameters in alternate order (if there are multiple parameters)
-    if (params.length > 1) {
-      const reversedParams = [...params].reverse();
-      const reversedNamedSnippet = reversedParams.map((p, i) => 
-        `${p.name}: \${${reversedParams.length-i}:${p.type || 'value'}}`
-      ).join(' ');
-      
-      const reversedNamedCall: CompletionItem = {
-        label: `${funcName} (named params - alt order)`,
-        kind: CompletionItemKind.Snippet,
-        detail: `(${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call with named parameters in alternate order.\n\nSignature: \`(${funcName} ${reversedParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-        },
-        insertText: `(${funcName} ${reversedNamedSnippet})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `04-${funcName}`,
-        data: {
-          isFx,
-          returnType,
-          style: 'named-reverse'
-        }
-      };
-      completions.push(reversedNamedCall);
-    }
-    
-    // 5. If some parameters have defaults, add call patterns with just required parameters
-    if (requiredParams.length > 0 && optionalParams.length > 0) {
-      // Positional style (required only)
-      const requiredPositionalSnippet = requiredParams.map((p, i) => `\${${i+1}:${p.type || 'value'}}`).join(' ');
-      const requiredPositionalCall: CompletionItem = {
-        label: `${funcName} (required only)`,
-        kind: CompletionItemKind.Snippet,
-        detail: `(${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call with only required parameters in positional style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => p.type || 'Any').join(' ')})\``
-        },
-        insertText: `(${funcName} ${requiredPositionalSnippet})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `05-${funcName}`,
-        data: {
-          isFx,
-          returnType,
-          style: 'positional-required'
-        }
-      };
-      completions.push(requiredPositionalCall);
-      
-      // Named style (required only)
-      if (requiredParams.length > 0) {
-        const requiredNamedSnippet = requiredParams.map((p, i) => `${p.name}: \${${i+1}:${p.type || 'value'}}`).join(' ');
-        const requiredNamedCall: CompletionItem = {
-          label: `${funcName} (required named)`,
-          kind: CompletionItemKind.Snippet,
-          detail: `(${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `Function call with only required parameters in named style.\n\nSignature: \`(${funcName} ${requiredParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-          },
-          insertText: `(${funcName} ${requiredNamedSnippet})`,
-          insertTextFormat: InsertTextFormat.Snippet,
-          sortText: `06-${funcName}`,
-          data: {
-            isFx,
-            returnType,
-            style: 'named-required'
-          }
-        };
-        completions.push(requiredNamedCall);
-      }
-    }
-    
-    // 6. If all parameters have defaults, add empty call pattern
-    if (allParamsHaveDefaults) {
-      const emptyCall: CompletionItem = {
-        label: `${funcName} (empty call)`,
-        kind: CompletionItemKind.Snippet,
-        detail: `(${funcName})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call using all default parameter values.\n\nAll parameters have defaults: ${params.map(p => `${p.name} = ${p.defaultValue}`).join(', ')}`
-        },
-        insertText: `(${funcName})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `07-${funcName}`,
-        data: {
-          isFx,
-          returnType,
-          style: 'empty'
-        }
-      };
-      completions.push(emptyCall);
-    }
-    
-    // 7. Individual named parameter completions - ONLY VALID ONES BASED ON CONTEXT
-    if (allParamsHaveDefaults) {
-      // If all params have defaults, any individual named parameter is valid
-      params.forEach((param, index) => {
-        const paramCompletion: CompletionItem = {
-          label: `${funcName} - ${param.name}:`,
-          kind: CompletionItemKind.Property,
-          detail: `Parameter: ${param.type || 'Any'}${param.defaultValue ? ` = ${param.defaultValue}` : ''}`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `Named parameter for \`${funcName}\`${param.defaultValue ? `\n\nDefault value: \`${param.defaultValue}\`` : ''}`
-          },
-          insertText: `(${funcName} ${param.name}: \${1:${param.type || 'value'}})`,
-          insertTextFormat: InsertTextFormat.Snippet,
-          sortText: `20-${funcName}-${param.name}`,
-          data: {
-            isFx,
-            returnType,
-            paramName: param.name,
-            paramType: param.type,
-            style: 'named-param'
-          }
-        };
-        completions.push(paramCompletion);
-      });
-    } else if (requiredParams.length === 1 && optionalParams.length > 0) {
-      // Special case: only one required parameter and some optional ones
-      // In this case, we can offer the required parameter as a named parameter
-      const param = requiredParams[0];
-      const paramCompletion: CompletionItem = {
-        label: `${funcName} - ${param.name}:`,
-        kind: CompletionItemKind.Property,
-        detail: `Required parameter: ${param.type || 'Any'}`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Required named parameter for \`${funcName}\``
-        },
-        insertText: `(${funcName} ${param.name}: \${1:${param.type || 'value'}})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `15-${funcName}-${param.name}`,
-        data: {
-          isFx,
-          returnType,
-          paramName: param.name,
-          paramType: param.type,
-          style: 'named-param-required'
-        }
-      };
-      completions.push(paramCompletion);
-    }
-    
-    // 8. Add placeholder pattern with underscores for defaults
-    if (optionalParams.length > 0 && requiredParams.length > 0) {
-      // Create a pattern with _ for defaults and placeholders for required
-      const placeholderItems = params.map((p, i) => {
-        if (p.defaultValue) {
-          return '_';
-        } else {
-          return `\${${i+1}:${p.type || 'value'}}`;
-        }
-      });
-      
-      // Only add if we have at least one underscore
-      if (placeholderItems.some(item => item === '_')) {
-        const placeholderSnippet = placeholderItems.join(' ');
-        const placeholderCall: CompletionItem = {
-          label: `${funcName} (placeholder)`,
-          kind: CompletionItemKind.Snippet,
-          detail: `(${funcName} ${placeholderItems.join(' ')})`,
-          documentation: {
-            kind: MarkupKind.Markdown,
-            value: `Function call using underscores for default parameters.\n\nUnderscore \`_\` indicates parameters that will use their default values.`
-          },
-          sortText: `08-${funcName}`,
-          insertText: `(${funcName} ${placeholderSnippet})`,
-          insertTextFormat: InsertTextFormat.Snippet,
-          data: {
-            isFx,
-            returnType,
-            style: 'placeholder'
-          }
-        };
-        completions.push(placeholderCall);
-      }
-    }
-    
-    // 9. Special patterns for one required parameter with defaults
-    if (requiredParams.length === 1 && optionalParams.length > 0) {
-      // Mixed pattern: first parameter positional, other parameters named
-      const firstParam = requiredParams[0];
-      const mixedSnippets = optionalParams.map((p, i) => 
-        `${p.name}: \${${i+2}:${p.type || 'value'}}`
-      );
-      
-      const mixedPattern = `\${1:${firstParam.type || 'value'}} ${mixedSnippets.join(' ')}`;
-      const mixedCall: CompletionItem = {
-        label: `${funcName} (mixed style)`,
-        kind: CompletionItemKind.Snippet,
-        detail: `(${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: `Function call with mixed style: first parameter positional, others named.\n\nSignature: \`(${funcName} ${firstParam.type || 'Any'} ${optionalParams.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ')})\``
-        },
-        insertText: `(${funcName} ${mixedPattern})`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: `09-${funcName}`,
-        data: {
-          isFx,
-          returnType,
-          style: 'mixed'
-        }
-      };
-      completions.push(mixedCall);
-    }
-    
+    console.log(`[HQL Completion] Generated ${completions.length} function call completions`);
     return completions;
   }
   
@@ -3798,6 +3495,48 @@ export class CompletionProvider {
     }
     
     return [];
+  }
+
+  /**
+   * Fixes incorrectly parsed parameters that have colons in their names
+   */
+  private fixParameterTypes(params: any[]): any[] {
+    // If we have any parameters with names ending in colon, 
+    // we might have the wrong parameter/type structure
+    if (params.some(p => p.name && p.name.endsWith(':'))) {
+      const fixedParams: any[] = [];
+      
+      // Process parameters in pairs to fix incorrect parsing
+      for (let i = 0; i < params.length; i += 2) {
+        const paramWithColon = params[i];
+        
+        // Check if this appears to be a wrongly parsed param:type pair
+        if (paramWithColon && paramWithColon.name && 
+            paramWithColon.name.endsWith(':') && 
+            i + 1 < params.length) {
+          
+          // The next parameter is likely the type
+          const typeParam = params[i + 1];
+          
+          // Create fixed parameter with correct name and type
+          const fixedParam = {
+            name: paramWithColon.name.substring(0, paramWithColon.name.length - 1),
+            type: typeParam.name || typeParam.type || 'Any',
+            defaultValue: paramWithColon.defaultValue || typeParam.defaultValue
+          };
+          
+          fixedParams.push(fixedParam);
+        } else {
+          // Just add the parameter as is if it doesn't match the pattern
+          fixedParams.push(paramWithColon);
+        }
+      }
+      
+      return fixedParams;
+    }
+    
+    // No problematic params, return as is
+    return params;
   }
 }
 
