@@ -19,8 +19,6 @@ import { getCurrentExpression } from '../helper/getExpressionRange';
 import { parse, SExp } from '../parser';
 import { isList, isSymbol, isString } from '../s-exp/types';
 import { SymbolManager, ExtendedSymbolInformation } from './symbolManager';
-import * as ts from 'typescript';
-import { SymbolViewModel } from './symbolViewModel';
 
 /**
  * CompletionProvider handles intelligent code completion for HQL
@@ -320,48 +318,38 @@ export class CompletionProvider {
   
       // Get the word at the cursor position
       const word = this.getWordAtPosition(linePrefix);
-      console.log(`[HQL Completion] Word at position: "${word}"`);
       
       // Start building completion items
       let completions: CompletionItem[] = [];
       
       // Add standard library completions
-      const stdLibCompletions = this.getStdLibCompletions(word);
-      console.log(`[HQL Completion] Added ${stdLibCompletions.length} standard library completions`);
-      completions = completions.concat(stdLibCompletions);
+      completions = completions.concat(this.getStdLibCompletions(word));
       
       // Add document symbols
-      const symbolCompletions = this.getDocumentSymbolCompletions(document, position, word);
-      console.log(`[HQL Completion] Added ${symbolCompletions.length} document symbol completions`);
-      completions = completions.concat(symbolCompletions);
+      completions = completions.concat(
+        this.getDocumentSymbolCompletions(document, position, word)
+      );
       
       // Check for function context - add corresponding templates
       const enclosingFunction = this.findEnclosingFunction(document, position);
       if (enclosingFunction) {
         const functionSpecificCompletions = this.getFunctionSpecificCompletions(enclosingFunction.name);
         if (functionSpecificCompletions.length > 0) {
-          console.log(`[HQL Completion] Added ${functionSpecificCompletions.length} function-specific completions`);
           completions = completions.concat(functionSpecificCompletions);
         }
       }
       
       // Add template completions
-      const templateCompletions = this.getTemplateCompletions(word);
-      console.log(`[HQL Completion] Added ${templateCompletions.length} template completions`);
-      completions = completions.concat(templateCompletions);
+      completions = completions.concat(
+        this.getTemplateCompletions(word)
+      );
       
       // Add type completions
       if (word.length > 0) {
-        const typeCompletions = this.getTypeCompletions(word);
-        console.log(`[HQL Completion] Added ${typeCompletions.length} type completions`);
-        completions = completions.concat(typeCompletions);
+        completions = completions.concat(
+          this.getTypeCompletions(word)
+        );
       }
-      
-      // Remove duplicates and log all completions with label starting with our word
-      console.log(`[HQL Completion] Before deduplication, completions matching "${word}":`);
-      completions.filter(c => c.label.toLowerCase().startsWith(word.toLowerCase())).slice(0, 10).forEach(c => {
-        console.log(`[HQL Completion] Completion: "${c.label}", sort: "${c.sortText || 'undefined'}"`);
-      });
       
       // Remove duplicates
       return this.mergeAndDeduplicate(completions);
@@ -449,30 +437,6 @@ export class CompletionProvider {
    * prioritizing items with better sortText values
    */
   private mergeAndDeduplicate(completions: CompletionItem[]): CompletionItem[] {
-    console.log(`[HQL Completion] Merging and deduplicating ${completions.length} completions`);
-    
-    // Add some logging for the first few completions
-    completions.slice(0, 5).forEach(item => {
-      console.log(`[HQL Completion] Before sort - Label: ${item.label}, sortText: ${item.sortText || 'undefined'}`);
-    });
-    
-    // First - set default sortText if missing to ensure proper ordering
-    completions.forEach(item => {
-      // If missing sortText, add default according to type (snippet vs basic)
-      if (!item.sortText) {
-        if (item.label.includes('(') && !item.label.includes('(basic)')) {
-          // Higher priority for function calls with parameters
-          item.sortText = `10-${item.label}`;
-        } else if (item.insertTextFormat === InsertTextFormat.Snippet) {
-          // Medium priority for snippets
-          item.sortText = `50-${item.label}`;
-        } else {
-          // Low priority for basic completions
-          item.sortText = `90-${item.label}`;
-        }
-      }
-    });
-    
     // Sort completions by sortText first, so items with better priority come first
     completions.sort((a, b) => {
       const aSortText = a.sortText || a.label;
@@ -480,59 +444,20 @@ export class CompletionProvider {
       return aSortText.localeCompare(bSortText);
     });
     
-    // Log after sorting
-    console.log(`[HQL Completion] After sorting, first 5 completions:`);
-    completions.slice(0, 5).forEach(item => {
-      console.log(`[HQL Completion] After sort - Label: ${item.label}, sortText: ${item.sortText || 'undefined'}`);
-    });
-    
-    // Create a more specific deduplication key
-    const getItemKey = (item: CompletionItem): string => {
-      // For function calls, use a more specific key that includes parameter style
-      if (item.label.includes('(') && item.kind === CompletionItemKind.Snippet) {
-        // Check if it's an enum parameter completion
-        if (item.label.includes(': .') || item.label.includes(': ') && item.label.includes('.')) {
-          return `enum-${item.label}`;
-        }
-        
-        // Check if it's a named parameter completion
-        if (item.label.includes(': ')) {
-          return `named-${item.label}`;
-        }
-        
-        // Otherwise it's a positional parameter completion
-        return `positional-${item.label}`;
-      }
-      
-      // For basic completions, just use the label
-      return `basic-${item.label}`;
-    };
-    
-    // Use a Map with our compound key to deduplicate while preserving different styles
+    // Use a Map to keep only the first occurrence of each label
     const uniqueMap = new Map<string, CompletionItem>();
     
     for (const item of completions) {
-      const key = getItemKey(item);
-      
-      // Skip if we already have a better item for this key
-      if (uniqueMap.has(key)) {
-        console.log(`[HQL Completion] Skipping duplicate: ${item.label}, key: ${key}, sortText: ${item.sortText || 'undefined'}`);
+      // Skip if we already have a better item for this label
+      if (uniqueMap.has(item.label)) {
         continue;
       }
       
       // Add new unique item
-      uniqueMap.set(key, item);
+      uniqueMap.set(item.label, item);
     }
     
-    const result = Array.from(uniqueMap.values());
-    console.log(`[HQL Completion] Returning ${result.length} deduplicated completions`);
-    
-    // Log final top results
-    result.slice(0, 5).forEach(item => {
-      console.log(`[HQL Completion] Final - Label: ${item.label}, sortText: ${item.sortText || 'undefined'}`);
-    });
-    
-    return result;
+    return Array.from(uniqueMap.values());
   }
   
   /**
@@ -1671,7 +1596,7 @@ export class CompletionProvider {
       
       // Create the default completion item for non-function symbols
       const completionItem: CompletionItem = {
-        label: symbol.kind === 12 || symbol.kind === 6 ? `${symbol.name} (basic)` : symbol.name,
+        label: symbol.name,
         kind: kind,
         detail: detail,
         documentation: documentation ? {
@@ -1688,10 +1613,10 @@ export class CompletionProvider {
       // Add sort text to control sorting
       switch (symbol.kind) {
         case 12: // Function
-          completionItem.sortText = `99-${symbol.name}`;  // Changed from 20- to 99- for lowest priority
+          completionItem.sortText = `20-${symbol.name}`;
           break;
         case 6: // Method
-          completionItem.sortText = `99-${symbol.name}`;  // Changed from 21- to 99- for lowest priority
+          completionItem.sortText = `21-${symbol.name}`;
           break;
         case 5: // Class
           completionItem.sortText = `30-${symbol.name}`;
@@ -1835,7 +1760,7 @@ export class CompletionProvider {
     
     // 6. Add basic function name completion (lowest priority)
     completions.push({
-      label: `${funcName} (basic)`,  // Changed to make unique from snippets
+      label: funcName,
       kind: CompletionItemKind.Function,
       insertText: `(${funcName} \${1})`,
       sortText: `99-${funcName}`, // Lowest priority - use 99 to ensure it's last
@@ -3423,7 +3348,7 @@ export class CompletionProvider {
           // Add parentheses and position cursor for argument
           insertText: `(${item.name} \${0})`,
           insertTextFormat: InsertTextFormat.Snippet,
-          sortText: `50-${item.name}` // Medium priority for standard library items (changed from 01-)
+          sortText: `01-${item.name}` // High priority for standard library items
         };
       } else {
         // For keywords and other types
@@ -3438,7 +3363,7 @@ export class CompletionProvider {
           // Keywords typically start expressions and may need parens based on context
           insertText: item.kind === CompletionItemKind.Keyword ? `(${item.name} \${0})` : item.name,
           insertTextFormat: item.kind === CompletionItemKind.Keyword ? InsertTextFormat.Snippet : InsertTextFormat.PlainText,
-          sortText: `50-${item.name}` // Medium priority for standard library items (changed from 01-)
+          sortText: `01-${item.name}` // High priority for standard library items
         };
       }
     });
@@ -3612,144 +3537,6 @@ export class CompletionProvider {
     
     // No problematic params, return as is
     return params;
-  }
-
-  private generateFunctionCallCompletions(
-    symbolName: string, 
-    symbol: ts.Symbol, 
-    checker: ts.TypeChecker
-  ): CompletionItem[] {
-    console.log(`[HQL Completion] Generate function call completions for ${symbolName}`);
-    
-    // Function calls
-    if (
-      (symbol.flags & ts.SymbolFlags.Function) ||
-      (symbol.flags & ts.SymbolFlags.Method) ||
-      (symbol.flags & ts.SymbolFlags.Constructor)
-    ) {
-      console.log(`[HQL Completion] Found function symbol for ${symbolName}`);
-      const completions: CompletionItem[] = [];
-      const fn = symbol as ts.Symbol;
-
-      // Type parameters are still not handled correctly, so we skip them for now
-      const parameters = SymbolViewModel.getParametersFromSymbol(fn, checker);
-      console.log(`[HQL Completion] Found ${parameters.length} parameters for ${symbolName}`);
-
-      // Fix parameter types
-      for (const param of parameters) {
-        // Replace any occurence of __type with a placeholder
-        // This happens when hovering over the parameters of some functions
-        if (param.type.includes("__type")) {
-          param.type = "any";
-        }
-      }
-
-      // If we have enum parameters, create completions for each enum value
-      const hasEnumParams = parameters.some(param => param.type.includes("(enum)"));
-      
-      // Cases with enum parameters require special handling
-      if (hasEnumParams) {
-        console.log(`[HQL Completion] Function ${symbolName} has enum parameters`);
-        
-        // Create a basic completion
-        const basicItem: CompletionItem = {
-          label: `${symbolName}() (basic)`,
-          insertText: `${symbolName}()$0`,
-          filterText: symbolName,
-          kind: CompletionItemKind.Function,
-          insertTextFormat: InsertTextFormat.Snippet,
-          commitCharacters: ["(", " "],
-          sortText: "50-basic",
-        };
-        completions.push(basicItem);
-        
-        // Create completions with enum values
-        const itemsWithEnums = this.generateCompletionsWithEnumParams(symbolName, parameters);
-        if (itemsWithEnums.length > 0) {
-          // Give highest priority to enum completions
-          itemsWithEnums.forEach((item: CompletionItem) => {
-            item.sortText = `01-enum-${symbolName}`;
-          });
-          completions.push(...itemsWithEnums);
-        }
-      } else {
-        // 1. Named parameters
-        if (parameters.length > 0) {
-          const namedParams = parameters
-            .map((param: any) => `${param.name}: \${${param.index + 1}:${param.type}}`)
-            .join(", ");
-            
-          const namedItem: CompletionItem = {
-            label: `${symbolName}({ ... }) (named params)`,
-            insertText: `${symbolName}({ ${namedParams} })$0`,
-            filterText: symbolName,
-            kind: CompletionItemKind.Function,
-            insertTextFormat: InsertTextFormat.Snippet,
-            commitCharacters: ["(", " "],
-            sortText: `05-named-${symbolName}`,
-          };
-          completions.push(namedItem);
-        }
-        
-        // 2. Positional parameters
-        if (parameters.length > 0) {
-          const positionalParams = parameters
-            .map((param: any) => `\${${param.index + 1}:${param.type}}`)
-            .join(", ");
-            
-          const positionalItem: CompletionItem = {
-            label: `${symbolName}(...) (positional params)`,
-            insertText: `${symbolName}(${positionalParams})$0`,
-            filterText: symbolName,
-            kind: CompletionItemKind.Function,
-            insertTextFormat: InsertTextFormat.Snippet,
-            commitCharacters: ["(", " "],
-            sortText: `10-positional-${symbolName}`,
-          };
-          completions.push(positionalItem);
-        }
-        
-        // 3. Basic function call (lowest priority)
-        const basicItem: CompletionItem = {
-          label: `${symbolName}() (basic)`,
-          insertText: `${symbolName}()$0`,
-          filterText: symbolName,
-          kind: CompletionItemKind.Function,
-          insertTextFormat: InsertTextFormat.Snippet,
-          commitCharacters: ["(", " "],
-          sortText: `50-basic-${symbolName}`,
-        };
-        completions.push(basicItem);
-      }
-
-      console.log(`[HQL Completion] Generated ${completions.length} function call completions for ${symbolName}`);
-      return completions;
-    }
-    
-    // Classes (instantiation with new)
-    else if (symbol.flags & ts.SymbolFlags.Class) {
-      const classSymbol = symbol as ts.Symbol;
-      const classItem: CompletionItem = {
-        label: `new ${symbolName}()`,
-        insertText: `new ${symbolName}()$0`,
-        filterText: symbolName,
-        kind: CompletionItemKind.Class,
-        insertTextFormat: InsertTextFormat.Snippet,
-        commitCharacters: ["(", " "],
-        sortText: `20-class-${symbolName}`,
-      };
-      return [classItem];
-    }
-    
-    // Other types
-    return [];
-  }
-
-  private generateCompletionsWithEnumParams(symbolName: string, parameters: any[]): CompletionItem[] {
-    // Basic implementation that can be expanded later
-    const completions: CompletionItem[] = [];
-    // Add implementation here
-    return completions;
   }
 }
 
