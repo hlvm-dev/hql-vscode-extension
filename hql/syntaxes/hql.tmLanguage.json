@@ -22,6 +22,7 @@
     { "include": "#enum-declaration" },
     { "include": "#class-declaration" },
     { "include": "#import-declaration" },
+    { "include": "#export-declaration" },
     { "include": "#dot-notation" },
     { "include": "#regular-symbol" },
     { "include": "#parens" }
@@ -90,7 +91,7 @@
       "name": "constant.other.keyword.hql"
     },
     "special-form": {
-      "match": "(?<=\\()(def|var|let|fx|fn|defmacro|macro|if|loop|recur|cond|when|unless|for|while|enum|class|case|method|constructor|do|repeat|import|export|set!|return|->|&|\\.|from:|to:|by:)\\b",
+      "match": "(?<=\\()(def|var|let|fx|fn|defmacro|macro|if|loop|recur|cond|when|unless|for|while|class|method|constructor|do|repeat|set!|return|->|&|\\.|from:|to:|by:)\\b",
       "name": "keyword.control.hql"
     },
     "function-definition": {
@@ -186,18 +187,18 @@
       ]
     },
     "enum-declaration": {
-      "begin": "\\(enum\\s+([A-Z][a-zA-Z0-9_]*)",
+      "begin": "\\((enum)\\s+([A-Z][a-zA-Z0-9_]*)",
       "beginCaptures": {
-        "0": { "name": "keyword.control.hql" },
-        "1": { "name": "entity.name.type.enum.hql" }
+        "1": { "name": "keyword.control.hql" },
+        "2": { "name": "entity.name.type.enum.hql" }
       },
       "end": "\\)",
       "patterns": [
         {
-          "begin": "\\(case\\s+([a-zA-Z][a-zA-Z0-9_]*)",
+          "begin": "\\((case)\\s+([a-zA-Z][a-zA-Z0-9_]*)",
           "beginCaptures": {
-            "0": { "name": "keyword.control.hql" },
-            "1": { "name": "entity.name.type.enum.case.hql" }
+            "1": { "name": "keyword.control.hql" },
+            "2": { "name": "entity.name.type.enum.case.hql" }
           },
           "end": "\\)",
           "patterns": [
@@ -251,13 +252,20 @@
       ]
     },
     "import-declaration": {
+      "begin": "\\((import)\\s+",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.hql" }
+      },
+      "end": "\\)",
       "patterns": [
         {
-          "begin": "\\(import\\s+\\[",
-          "beginCaptures": {
-            "0": { "name": "keyword.control.hql" }
-          },
+          "match": "\\bfrom\\b",
+          "name": "keyword.control.hql"
+        },
+        {
+          "begin": "\\[",
           "end": "\\]",
+          "name": "meta.brackets.hql",
           "patterns": [
             {
               "match": "([a-zA-Z][a-zA-Z0-9\\-_]*)\\s+as\\s+([a-zA-Z][a-zA-Z0-9\\-_]*)",
@@ -273,29 +281,36 @@
             { "include": "$self" }
           ]
         },
+        { "include": "$self" }
+      ]
+    },
+    "export-declaration": {
+      "begin": "\\((export)\\s+",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.hql" }
+      },
+      "end": "\\)",
+      "patterns": [
         {
-          "begin": "\\(import\\s+([a-zA-Z][a-zA-Z0-9\\-_]*)",
-          "beginCaptures": {
-            "0": { "name": "keyword.control.hql" },
-            "1": { "name": "variable.other.hql" }
-          },
-          "end": "(?=\\s+from\\s+)",
+          "begin": "\\[",
+          "end": "\\]",
+          "name": "meta.brackets.hql",
           "patterns": [
+            {
+              "match": "([a-zA-Z][a-zA-Z0-9\\-_]*)\\s+as\\s+([a-zA-Z][a-zA-Z0-9\\-_]*)",
+              "captures": {
+                "1": { "name": "variable.other.hql" },
+                "2": { "name": "variable.other.hql" }
+              }
+            },
+            {
+              "match": "([a-zA-Z][a-zA-Z0-9\\-_]*)",
+              "name": "variable.other.hql"
+            },
             { "include": "$self" }
           ]
         },
-        {
-          "match": "\\bfrom\\b",
-          "name": "keyword.control.hql"
-        },
-        {
-          "begin": "from\\s+([\"'])",
-          "beginCaptures": {
-            "0": { "name": "keyword.control.hql" }
-          },
-          "end": "\\1",
-          "contentName": "string.quoted.hql"
-        }
+        { "include": "$self" }
       ]
     },
     "dot-notation": {

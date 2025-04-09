@@ -1074,7 +1074,7 @@ export class CompletionProvider {
     if (params.length > 0) {
       const namedItems = params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ');
       completions.push({
-        label: `named parameters: ${namedItems}`,
+        label: `(${funcName} ${namedItems})`,
         kind: CompletionItemKind.Snippet,
         detail: `Complete call with named arguments: (${funcName} ${namedItems})`,
         documentation: {
@@ -1115,7 +1115,7 @@ export class CompletionProvider {
       // Positional
       const positionalItems = params.map(p => p.type || 'Any').join(' ');
       completions.push({
-        label: `positional parameters: ${positionalItems}`,
+        label: `(${funcName} ${positionalItems})`,
         kind: CompletionItemKind.Snippet,
         detail: `Complete call with positional arguments: (${funcName} ${positionalItems})`,
         documentation: {
@@ -1660,7 +1660,7 @@ export class CompletionProvider {
       return [{
         label: funcName,
         kind: CompletionItemKind.Function,
-        insertText: funcName,
+        insertText: `(${funcName} )`,
         sortText: `05-${funcName}`, // Lowest priority
         insertTextFormat: InsertTextFormat.PlainText
       }];
@@ -1686,14 +1686,14 @@ export class CompletionProvider {
         
         // Add shorthand dot notation completion
         completions.push({
-          label: `${funcName} (${param.name}: .)`,
+          label: `(${funcName} ${param.name}: .)`,
           kind: CompletionItemKind.Snippet,
           detail: `Call with ${param.name} using shorthand enum notation`,
           documentation: {
             kind: MarkupKind.Markdown,
             value: `Use \`.CaseName\` shorthand for enum \`${param.type}\``
           },
-          insertText: `${funcName} (${param.name}: .)`,
+          insertText: `(${funcName} ${param.name}: .)`,
           sortText: `01-${funcName}-enum-dot`, // Highest priority
           insertTextFormat: InsertTextFormat.PlainText,
           command: {
@@ -1704,14 +1704,14 @@ export class CompletionProvider {
         
         // Add qualified name completion
         completions.push({
-          label: `${funcName} (${param.name}: ${param.type}.)`,
+          label: `(${funcName} ${param.name}: ${param.type}.)`,
           kind: CompletionItemKind.Snippet,
           detail: `Call with ${param.name} using qualified enum name`,
           documentation: {
             kind: MarkupKind.Markdown,
             value: `Use \`${param.type}.CaseName\` qualified name for enum \`${param.type}\``
           },
-          insertText: `${funcName} (${param.name}: ${param.type}.)`,
+          insertText: `(${funcName} ${param.name}: ${param.type}.)`,
           sortText: `02-${funcName}-enum-qualified`, // Second priority
           insertTextFormat: InsertTextFormat.PlainText,
           command: {
@@ -1727,14 +1727,14 @@ export class CompletionProvider {
       const namedParams = params.map(p => `${p.name}: ${p.type || 'Any'}`).join(' ');
       
       completions.push({
-        label: `${funcName} (named)`,
+        label: `(${funcName} ${namedParams})`,
         kind: CompletionItemKind.Snippet,
-        detail: `Call with named parameters: ${funcName} (${namedParams})`,
+        detail: `Call with named parameters: (${funcName} ${namedParams})`,
         documentation: {
           kind: MarkupKind.Markdown,
           value: `Complete function call with named parameters.`
         },
-        insertText: `${funcName} (${namedParams})`,
+        insertText: `(${funcName} ${namedParams})`,
         sortText: `03-${funcName}-named`, // Third priority
         insertTextFormat: InsertTextFormat.PlainText
       });
@@ -1745,14 +1745,14 @@ export class CompletionProvider {
       const positionalParams = params.map(p => p.type || 'Any').join(' ');
       
       completions.push({
-        label: `${funcName} (positional)`,
+        label: `(${funcName} ${positionalParams})`,
         kind: CompletionItemKind.Snippet,
-        detail: `Call with positional parameters: ${funcName} (${positionalParams})`,
+        detail: `Call with positional parameters: (${funcName} ${positionalParams})`,
         documentation: {
           kind: MarkupKind.Markdown,
           value: `Complete function call with positional parameters.`
         },
-        insertText: `${funcName} (${positionalParams})`,
+        insertText: `(${funcName} ${positionalParams})`,
         sortText: `04-${funcName}-positional`, // Fourth priority
         insertTextFormat: InsertTextFormat.PlainText
       });
@@ -1762,7 +1762,7 @@ export class CompletionProvider {
     completions.push({
       label: funcName,
       kind: CompletionItemKind.Function,
-      insertText: funcName,
+      insertText: `(${funcName} `,
       sortText: `05-${funcName}`, // Lowest priority
       insertTextFormat: InsertTextFormat.PlainText
     });
