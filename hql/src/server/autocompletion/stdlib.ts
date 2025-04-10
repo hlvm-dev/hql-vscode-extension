@@ -91,7 +91,7 @@ import {
     );
     
     // Convert to completion items
-    return filtered.map((item: StdLibItem) => {
+    const completions = filtered.map((item: StdLibItem) => {
       // For data structure snippets, provide direct snippet without function call wrapping
       if (item.name.startsWith('vector') || 
           item.name.startsWith('list') || 
@@ -221,4 +221,32 @@ import {
         };
       }
     });
+
+    // Include match type in sortText if there's a word
+    if (prefix) {
+      const wordLower = prefix.toLowerCase();
+      
+      for (const item of completions) {
+        const label = item.label.toLowerCase();
+        const originalSortText = item.sortText || item.label;
+        
+        // Already has priority prefix (e.g., "20-functionName") - keep the original prefix
+        const sortPrefix = originalSortText.includes('-') ? 
+          originalSortText.split('-')[0] : '99';
+          
+        // Add match type to sort text: 1=prefix, 2=suffix, 3=fuzzy
+        if (label.startsWith(wordLower)) {
+          // Prefix match (highest priority)
+          item.sortText = `${sortPrefix}-1-${item.label}`;
+        } else if (label.endsWith(wordLower)) {
+          // Suffix match (medium priority)
+          item.sortText = `${sortPrefix}-2-${item.label}`;
+        } else {
+          // Fuzzy match (lowest priority)
+          item.sortText = `${sortPrefix}-3-${item.label}`;
+        }
+      }
+    }
+
+    return completions;
   }

@@ -799,6 +799,32 @@ import {
         
         // Add more function-specific completions as needed
         
+        // Apply match type priority to completions
+        if (word) {
+          const wordLower = word.toLowerCase();
+          
+          for (const item of completions) {
+            const label = item.label.toLowerCase();
+            const originalSortText = item.sortText || item.label;
+            
+            // Get original sort priority
+            const sortPrefix = originalSortText.includes('-') ? 
+              originalSortText.split('-')[0] : '99';
+            
+            // Add match type to sort text: 1=prefix, 2=suffix, 3=fuzzy
+            if (label.startsWith(wordLower)) {
+              // Prefix match (highest priority)
+              item.sortText = `${sortPrefix}-1-${item.label}`;
+            } else if (label.endsWith(wordLower)) {
+              // Suffix match (medium priority)
+              item.sortText = `${sortPrefix}-2-${item.label}`;
+            } else {
+              // Fuzzy match (lowest priority)
+              item.sortText = `${sortPrefix}-3-${item.label}`;
+            }
+          }
+        }
+        
         return completions;
       }
       

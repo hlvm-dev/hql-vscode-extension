@@ -303,20 +303,117 @@ export function handleImportCompletions(
         return getRelativePathCompletionItems(documentDir, fullPath);
     }
     
-    // Match import with vector style syntax: (import [sym
-    const importVectorStartMatch = currentLine.match(/import\s+\[\s*([^,\s]*)$/);
-    if (importVectorStartMatch) {
-        const partialSymbol = importVectorStartMatch[1] || '';
-        // Get module path from elsewhere in the text if available
-        const modulePath = fullText.match(/import\s+\[[^\]]*\]\s+from\s+["']([^"']+)["']/)?.[1];
+    // Match import with vector style syntax, including both empty vector and partial symbol
+    // - Case 1: (import [] from "./path.hql")
+    // - Case 2: (import [sym from "./path.hql")
+    // - Case 3: (import [] - empty brackets at end of line
+    // - Case 4: (import [symbol - partial symbol at end of line
+    const importVectorMatch = currentLine.match(/import\s+\[(\s*|\s*[^,\s]*)$/);
+    const importVectorEndOfLineMatch = linePrefix.match(/import\s+\[\s*([^,\s]*)$/);
+    
+    // Handle all import vector cases
+    if (importVectorMatch || importVectorEndOfLineMatch) {
+        // Get partial symbol from either match
+        const partialSymbol = (importVectorMatch?.[1] || importVectorEndOfLineMatch?.[1] || '').trim();
         
-        if (modulePath) {
-            // We're in a vector import with a module path, offer symbols from that module
-            return getImportableSymbols(modulePath, workspaceFolders).filter(item => 
-                item.label.toLowerCase().startsWith(partialSymbol.toLowerCase())
-            );
+        // Look for the module path in different ways, starting with the current line
+        let modulePath;
+        
+        // Check if the current line has the full pattern with path
+        const currentLinePathMatch = currentLine.match(/import\s+\[.*\]\s+from\s+["']([^"']+)["']/);
+        if (currentLinePathMatch) {
+            modulePath = currentLinePathMatch[1];
         }
-        return [];
+        
+        // Also check for a path following the cursor position
+        if (!modulePath) {
+            // Look in the full text for a completed statement
+            modulePath = fullText.match(/import\s+\[[^\]]*\]\s+from\s+["']([^"']+)["']/)?.[1];
+            
+            // If not found, check for an incomplete statement with path
+            if (!modulePath) {
+                const fromPathMatch = fullText.match(/import\s+\[.*\s+from\s+["']([^"']+)["']/);
+                if (fromPathMatch) {
+                    modulePath = fromPathMatch[1];
+                }
+            }
+            
+            // If still not found, scan subsequent lines for a 'from' clause
+            if (!modulePath) {
+                const lines = fullText.split('\n');
+                const currentLineIndex = lines.findIndex(line => line.includes(currentLine.trim()));
+                if (currentLineIndex !== -1) {
+                    // Check next several lines for a 'from' clause
+                    for (let i = currentLineIndex; i < Math.min(currentLineIndex + 5, lines.length); i++) {
+                        const fromMatch = lines[i].match(/\s*from\s+["']([^"']+)["']/);
+                        if (fromMatch) {
+                            modulePath = fromMatch[1];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If we found a module path, get its exported symbols
+        if (modulePath) {
+            console.log(`Found module path for import completion: ${modulePath}`);
+            const importables = getImportableSymbols(modulePath, workspaceFolders);
+            
+            // Even if empty, add a message
+            if (importables.length === 0) {
+                return [{
+                    label: '/* No exports found */',
+                    kind: CompletionItemKind.Text,
+                    detail: `No exported symbols found in ${modulePath}`
+                }];
+            }
+            
+            // List of common data structure templates to exclude from import suggestions
+            const dataStructureKeywords = ['vector', 'array', 'list', 'set', 'map', 'object'];
+            
+            // Filter based on partial symbol and exclude data structure templates that aren't actual exports
+            const filteredItems = importables
+                .filter(item => {
+                    // Skip common data structure templates unless they are truly exported symbols
+                    if (dataStructureKeywords.includes(item.label.toLowerCase())) {
+                        const isActualExport = item.data && 
+                                              typeof item.data.sourceModule === 'string' && 
+                                              item.data.sourceModule === modulePath;
+                        return isActualExport;
+                    }
+                    
+                    // For regular symbols, filter by partial match if needed
+                    return !partialSymbol || item.label.toLowerCase().includes(partialSymbol.toLowerCase());
+                })
+                .map(item => {
+                    // Apply sorting: exact prefix matches first
+                    if (partialSymbol && item.label.toLowerCase().startsWith(partialSymbol.toLowerCase())) {
+                        item.sortText = `01-${item.label}`;
+                    }
+                    return item;
+                });
+                
+            // Make sure we're not showing general template completions in import context
+            return filteredItems;
+        }
+        
+        // If we still can't determine the module path, look for path in quotes on the same line
+        const inLinePathMatch = currentLine.match(/from\s+["']([^"']*)["']/);
+        if (inLinePathMatch) {
+            const possiblePath = inLinePathMatch[1];
+            if (possiblePath) {
+                return getImportableSymbols(possiblePath, workspaceFolders)
+                    .filter(item => !partialSymbol || item.label.toLowerCase().includes(partialSymbol.toLowerCase()));
+            }
+        }
+        
+        // If we still can't determine anything, show a helpful message
+        return [{
+            label: '/* Specify a module path with from "..." */',
+            kind: CompletionItemKind.Text,
+            detail: 'Complete the import statement with a module path'
+        }];
     }
     
     // Match import with continuation of vector symbols: (import [sym1, sym
@@ -670,33 +767,104 @@ export function getImportableSymbols(modulePath: string, workspaceFolders: { uri
         // Get workspace root folder
         const workspaceRoot = workspaceFolders[0].uri.replace('file://', '');
         
-        // Resolve the module path
-        const fullPath = path.join(workspaceRoot, modulePath);
+        // Resolve the module path, handling different extensions
+        let fullPath = path.resolve(workspaceRoot, modulePath);
         
-        // Check if file exists
+        // If the file doesn't exist as is, try adding extensions
         if (!fs.existsSync(fullPath)) {
-            return [];
+            // Try with .hql extension if not already specified
+            if (!fullPath.endsWith('.hql') && !fullPath.endsWith('.js')) {
+                const hqlPath = `${fullPath}.hql`;
+                if (fs.existsSync(hqlPath)) {
+                    fullPath = hqlPath;
+                } else {
+                    // Try with .js extension
+                    const jsPath = `${fullPath}.js`;
+                    if (fs.existsSync(jsPath)) {
+                        fullPath = jsPath;
+                    } else {
+                        // Try looking for index files in the directory
+                        const indexHql = path.join(fullPath, 'index.hql');
+                        const indexJs = path.join(fullPath, 'index.js');
+                        
+                        if (fs.existsSync(indexHql)) {
+                            fullPath = indexHql;
+                        } else if (fs.existsSync(indexJs)) {
+                            fullPath = indexJs;
+                        } else {
+                            console.warn(`Could not resolve module path: ${modulePath}`);
+                            return [];
+                        }
+                    }
+                }
+            } else {
+                console.warn(`File not found: ${fullPath}`);
+                return [];
+            }
         }
+        
+        console.log(`Reading module from: ${fullPath}`);
         
         // Read the file
         const moduleText = fs.readFileSync(fullPath, 'utf-8');
         
-        // Extract exported symbols from the module
-        const exportedSymbols = extractExportedSymbols(moduleText);
+        // Extract exported symbols from the module based on file type
+        const exportedSymbols = extractExportedSymbols(moduleText, fullPath);
         
-        // Convert to completion items
-        return exportedSymbols.map(symbol => ({
-            label: symbol,
-            kind: CompletionItemKind.Value,
-            detail: `Exported from ${path.basename(modulePath)}`,
-            documentation: {
-                kind: MarkupKind.Markdown,
-                value: `Symbol exported from module \`${modulePath}\``
-            },
-            data: {
-                sourceModule: modulePath
+        // If no exported symbols found but it's a JS file, it might have a default export
+        if (exportedSymbols.length === 0 && fullPath.endsWith('.js')) {
+            // Add default as a fallback for JS modules
+            exportedSymbols.push('default');
+        }
+        
+        // Get file extension to determine completion kind
+        const isJsFile = fullPath.endsWith('.js');
+        
+        // Convert to completion items with appropriate icons and details
+        return exportedSymbols.map(symbol => {
+            // Use only safe values to avoid type errors
+            let kind = CompletionItemKind.Value;
+            
+            if (isJsFile) {
+                // For JS files, all symbols use the same kind to avoid type errors
+                kind = CompletionItemKind.Value;
+            } else {
+                // For HQL files, also use a safe kind
+                kind = CompletionItemKind.Value;
             }
-        }));
+            
+            // Add a prefix to the detail to indicate the likely type
+            let typePrefix = "";
+            if (symbol === 'default') {
+                typePrefix = "[Module] ";
+            } else if (symbol.startsWith('get') || symbol.startsWith('set') || 
+                       symbol.endsWith('Function') || 
+                       symbol.startsWith('handle') || symbol.includes('Handler')) {
+                typePrefix = "[Function] ";
+            } else if (symbol.endsWith('Component') || 
+                      symbol[0] === symbol[0].toUpperCase()) {
+                typePrefix = "[Class] ";
+            }
+            
+            const extension = path.extname(fullPath);
+            const fileType = extension.slice(1).toUpperCase(); // Remove the dot and uppercase
+            
+            return {
+                label: symbol,
+                kind: kind,
+                detail: `${typePrefix}${symbol} (${fileType} export from ${path.basename(modulePath)})`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: `Symbol exported from \`${modulePath}\`\n\nFull path: \`${fullPath}\``
+                },
+                insertText: symbol,
+                sortText: `01-${symbol}`, // Give exported symbols high priority
+                data: {
+                    sourceModule: modulePath,
+                    fullPath: fullPath
+                }
+            };
+        });
     } catch (error) {
         console.error(`Error getting importable symbols: ${error}`);
         return [];
@@ -706,69 +874,154 @@ export function getImportableSymbols(modulePath: string, workspaceFolders: { uri
 /**
 * Extract exported symbols from a module
 */
-export function extractExportedSymbols(moduleText: string): string[] {
-    const exportedSymbols: string[] = [];
+export function extractExportedSymbols(moduleText: string, moduleFilePath: string = ''): string[] {
+    const rawSymbols: string[] = [];
     
     try {
-        // Parse the module text
-        const expressions = parse(moduleText, true);
-        
-        // Look for export forms
-        for (const expr of expressions) {
-            if (isList(expr) && expr.elements.length > 0) {
-                const first = expr.elements[0];
-                if (isSymbol(first) && first.name === 'export') {
-                    // Check vector export syntax: (export [sym1, sym2, ...])
-                    if (expr.elements.length > 1 && isList(expr.elements[1])) {
-                        const exportList = expr.elements[1];
-                        
-                        // Extract symbols from the export list
-                        for (const elem of exportList.elements) {
-                            if (isSymbol(elem)) {
-                                exportedSymbols.push(elem.name);
-                            } else if (isList(elem)) {
-                                // Handle potential 'as' syntax: (export [[original as alias], ...])
-                                // Check if this is an 'as' aliasing expression
-                                if (elem.elements.length > 2 && 
-                                    isSymbol(elem.elements[0]) && 
-                                    isSymbol(elem.elements[1]) && 
-                                    elem.elements[1].name === 'as' && 
-                                    isSymbol(elem.elements[2])) {
-                                        // Add the original name
-                                        exportedSymbols.push(elem.elements[0].name);
-                                    }
-                                }
-                            }
-                        }
-                        // Check legacy string-based export: (export "name" symbol)
-                        else if (expr.elements.length > 2 && isString(expr.elements[1]) && isSymbol(expr.elements[2])) {
-                            const exportName = expr.elements[1].value;
-                            exportedSymbols.push(exportName);
-                        }
-                    }
+      // Check if this is a JS file by examining file extension or text content.
+      const isJavaScript = moduleFilePath.endsWith('.js') ||
+                             moduleText.includes('module.exports') ||
+                             moduleText.includes('export function') ||
+                             moduleText.includes('export const') ||
+                             moduleText.includes('export let') ||
+                             moduleText.includes('export class');
+      
+      if (isJavaScript) {
+        // Handle JavaScript exports.
+        return extractJavaScriptExports(moduleText);
+      }
+      
+      // For HQL files, parse the module text.
+      const expressions = parse(moduleText, true);
+      
+      // Look for explicit export forms.
+      for (const expr of expressions) {
+        if (isList(expr) && expr.elements.length > 0) {
+          const first = expr.elements[0];
+          if (isSymbol(first) && first.name === 'export') {
+            // Check for the export list syntax: (export [sym1, sym2, ...])
+            if (expr.elements.length > 1 && isList(expr.elements[1])) {
+              const exportList = expr.elements[1];
+              for (const elem of exportList.elements) {
+                console.log("elem: ", elem);
+                if (isSymbol(elem)) {
+                  rawSymbols.push(elem.name);
+                } else if (isList(elem)) {
+                  // Handle possible aliasing: (export [[original as alias], ...])
+                  if (
+                    elem.elements.length > 2 &&
+                    isSymbol(elem.elements[0]) &&
+                    isSymbol(elem.elements[1]) &&
+                    elem.elements[1].name === 'as' &&
+                    isSymbol(elem.elements[2])
+                  ) {
+                    rawSymbols.push(elem.elements[0].name);
+                  }
                 }
-                
-                // Also look for exportable definitions (fn, fx, let, var, enum, etc.)
-                if (isList(expr) && expr.elements.length > 2 && isSymbol(expr.elements[0])) {
-                    const keyword = expr.elements[0].name;
-                    
-                    // Only consider top-level definitions that can be exported
-                    if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct', 'macro'].includes(keyword)) {
-                        if (isSymbol(expr.elements[1])) {
-                            const symbolName = expr.elements[1].name;
-                            
-                            // Only add the symbol if it's not already in the exported list
-                            // This way explicitly exported symbols take precedence over inferred exports
-                            if (!exportedSymbols.includes(symbolName)) {
-                                exportedSymbols.push(symbolName);
-                            }
-                        }
-                    }
-                }
+              }
             }
-        } catch (error) {
-            console.error(`Error extracting exported symbols: ${error}`);
+            // Check for legacy string-based export: (export "name" symbol)
+            else if (expr.elements.length > 2 && isString(expr.elements[1]) && isSymbol(expr.elements[2])) {
+              rawSymbols.push(expr.elements[1].value);
+            }
+          }
+        }
+      }
+      
+      // If no explicit exports were found, look for top-level definitions that can be implicitly exported.
+      if (rawSymbols.length === 0) {
+        for (const expr of expressions) {
+          if (isList(expr) && expr.elements.length > 1 && isSymbol(expr.elements[0])) {
+            const keyword = expr.elements[0].name;
+            if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct', 'macro'].includes(keyword)) {
+              if (isSymbol(expr.elements[1])) {
+                rawSymbols.push(expr.elements[1].name);
+              }
+            }
+          }
+        }
+      }
+      
+    } catch (error) {
+      console.error(`Error extracting exported symbols: ${error}`);
+    }
+    
+    // Post-process the raw symbols:
+    // 1. Remove duplicates while preserving the order.
+    // 2. For "vector": if it appeared only once in rawSymbols, it is omitted;
+    //    if it appears two or more times, then keep one occurrence.
+    const vectorCount = rawSymbols.filter(sym => sym === "vector").length;
+    const seen = new Set<string>();
+    const uniqueSymbols: string[] = [];
+    for (const sym of rawSymbols) {
+      if (sym === "vector") {
+        if (vectorCount > 1 && !seen.has("vector")) {
+          uniqueSymbols.push("vector");
+          seen.add("vector");
+        }
+        // Otherwise, skip "vector" if it occurred only once or if already added.
+      } else {
+        if (!seen.has(sym)) {
+          uniqueSymbols.push(sym);
+          seen.add(sym);
+        }
+      }
+    }
+    
+    return uniqueSymbols;
+  }
+  
+
+/**
+ * Extract exports from JavaScript files
+ */
+function extractJavaScriptExports(jsText: string): string[] {
+    const exports: string[] = [];
+    
+    try {
+        // Handle different export patterns
+        
+        // Named exports: export const foo = ...
+        const namedExportRegex = /export\s+(const|let|var|function|class)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
+        let match;
+        while ((match = namedExportRegex.exec(jsText)) !== null) {
+            exports.push(match[2]);
         }
         
-        return exportedSymbols;
+        // Default export: export default function foo() or export default foo
+        const defaultExportFnRegex = /export\s+default\s+(?:function\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)/;
+        const defaultMatch = jsText.match(defaultExportFnRegex);
+        if (defaultMatch) {
+            exports.push(defaultMatch[1]);
+            exports.push('default'); // Also add 'default' as an option
+        }
+        
+        // module.exports = { foo, bar }
+        const moduleExportsRegex = /module\.exports\s*=\s*{([^}]*)}/;
+        const moduleExportsMatch = jsText.match(moduleExportsRegex);
+        if (moduleExportsMatch) {
+            const exportsText = moduleExportsMatch[1];
+            const exportItems = exportsText.split(',').map(item => {
+                // Handle both foo: bar and foo
+                const colonMatch = item.match(/([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/);
+                if (colonMatch) {
+                    return colonMatch[1].trim();
+                }
+                return item.trim();
+            }).filter(Boolean);
+            
+            exports.push(...exportItems);
+        }
+        
+        // Handle exports.foo = ...
+        const exportsPropertyRegex = /exports\.([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=/g;
+        while ((match = exportsPropertyRegex.exec(jsText)) !== null) {
+            exports.push(match[1]);
+        }
+        
+    } catch (error) {
+        console.error(`Error extracting JS exports: ${error}`);
     }
+    
+    return exports;
+}

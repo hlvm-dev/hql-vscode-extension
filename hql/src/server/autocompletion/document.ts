@@ -106,24 +106,45 @@ import { generateFunctionCallCompletions }from "./fn"
       };
       
       // Add sort text to control sorting
+      let kindPrefix: string;
       switch (symbol.kind) {
         case 12: // Function
-          completionItem.sortText = `20-${symbol.name}`;
+          kindPrefix = '20';
           break;
         case 6: // Method
-          completionItem.sortText = `21-${symbol.name}`;
+          kindPrefix = '21';
           break;
         case 5: // Class
-          completionItem.sortText = `30-${symbol.name}`;
+          kindPrefix = '30';
           break;
         case 10: // Enum
-          completionItem.sortText = `40-${symbol.name}`;
+          kindPrefix = '40';
           break;
         case 13: // Variable
-          completionItem.sortText = `50-${symbol.name}`;
+          kindPrefix = '50';
           break;
         default:
-          completionItem.sortText = `90-${symbol.name}`;
+          kindPrefix = '90';
+      }
+      
+      // Include match type in sortText if there's a current word
+      if (word) {
+        const symbolName = symbol.name.toLowerCase();
+        const wordLower = word.toLowerCase();
+        
+        if (symbolName.startsWith(wordLower)) {
+          // Prefix match (highest priority)
+          completionItem.sortText = `${kindPrefix}-1-${symbol.name}`;
+        } else if (symbolName.endsWith(wordLower)) {
+          // Suffix match (medium priority)
+          completionItem.sortText = `${kindPrefix}-2-${symbol.name}`;
+        } else {
+          // Other match (lowest priority)
+          completionItem.sortText = `${kindPrefix}-3-${symbol.name}`;
+        }
+      } else {
+        // No filtering word
+        completionItem.sortText = `${kindPrefix}-0-${symbol.name}`;
       }
       
       completions.push(completionItem);

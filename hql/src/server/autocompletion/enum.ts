@@ -1,4 +1,3 @@
-
 import { TextDocument, Position, } from 'vscode-languageserver-textdocument';
 import { SymbolManager } from '../symbolManager';  
 import {
@@ -416,15 +415,14 @@ export function getAllEnumCaseCompletions(document: TextDocument, symbolManager:
         return getEnumValueCompletions(document, expectedType, true, symbolManager, dynamicValueCache);
       }
       
-      // FALLBACK: If we couldn't determine the type, show all enum cases
-      // This is better than showing nothing at all
-      console.log(`[HQL Completion] Couldn't determine expected type, showing all enum cases`);
-      return getAllEnumCaseCompletions(document, symbolManager);
+      // If we couldn't determine the type, don't show any completions
+      console.log(`[HQL Completion] Couldn't determine expected type, showing no enum cases`);
+      return [];
     }
     
-    // For any other dot context, show all enum cases as a fallback
-    // This ensures dot notation always shows something
-    return getAllEnumCaseCompletions(document, symbolManager);
+    // For any other dot context, don't show anything
+    // Only show enum cases when we can determine the proper context
+    return [];
   }
 
     /**

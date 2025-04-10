@@ -148,9 +148,9 @@ export class CompletionProvider {
           }
         }
         
-        // Fall back to all enum cases if no specific type determined
-        console.log(`[HQL Completion] Falling back to all enum cases`);
-        return getAllEnumCaseCompletions(document, this.symbolManager);
+        // Don't show any enum cases if we can't determine the correct type
+        console.log(`[HQL Completion] No specific enum type found for parameter, showing no completions`);
+        return [];
       }
       
       const fullText = document.getText();
@@ -425,21 +425,30 @@ export class CompletionProvider {
           return chainCompletions;
         }
       }
+
+      // Simplified import context detection
+      const importPattern = /\(\s*import\s+\[/;
+      const isImportContext = currentLine.match(importPattern) !== null;
+      console.log(`[HQL] Line: "${currentLine}" | Import context: ${isImportContext}`);
       
-      // Check for data structure literal completions
-      if (linePrefix.trim().endsWith('[')) {
-        console.log('Detected vector start: [');
+      // Check for data structure literal completions (but not in import contexts)
+      if (linePrefix.trim().endsWith('[') && !isImportContext) {
+        console.log('[HQL] Detected vector start: [ - Not in import context, providing completions');
         return getDataStructureLiteralCompletions('[');
-      } else if (linePrefix.trim().endsWith('{')) {
+      } else if (linePrefix.trim().endsWith('[') && isImportContext) {
+        console.log('[HQL] Detected vector start: [ - In import context, suppressing completions');
+        // Return empty array to prevent data structure completions in import context
+        return [];
+      } else if (linePrefix.trim().endsWith('{') && !isImportContext) {
         console.log('Detected map start: {');
         return getDataStructureLiteralCompletions('{');
-      } else if (linePrefix.trim().endsWith('#[')) {
+      } else if (linePrefix.trim().endsWith('#[') && !isImportContext) {
         console.log('Detected set start: #[');
         return getDataStructureLiteralCompletions('#[');
-      } else if (linePrefix.trim().endsWith('#')) {
+      } else if (linePrefix.trim().endsWith('#') && !isImportContext) {
         console.log('Detected set start shorthand: #');
         return getDataStructureLiteralCompletions('#[');
-      } else if (linePrefix.trim().endsWith("'")) {
+      } else if (linePrefix.trim().endsWith("'") && !isImportContext) {
         console.log('Detected list start: \'');
         return getDataStructureLiteralCompletions("'");
       }
@@ -474,37 +483,42 @@ export class CompletionProvider {
       // Start building completion items
       let completions: CompletionItem[] = [];
       
-      // Add standard library completions
-      completions = completions.concat(getStdLibCompletions(word));
+      // Check if we're in an import vector context
+      const inImportContext = this.isInImportVectorContext(linePrefix, currentLine);
       
-      // Add document symbols
-      completions = completions.concat(
-        getDocumentSymbolCompletions(document, position, word, this.symbolManager)
-      );
-      
-      // Check for function context - add corresponding templates
-      const enclosingFunction = this.findEnclosingFunction(document, position);
-      if (enclosingFunction) {
-        const functionSpecificCompletions = getFunctionSpecificCompletions(enclosingFunction.name);
-        if (functionSpecificCompletions.length > 0) {
-          completions = completions.concat(functionSpecificCompletions);
+      // Only add standard library completions if NOT in import context
+      if (!inImportContext) {
+        completions = completions.concat(getStdLibCompletions(word));
+        
+        // Add document symbols
+        completions = completions.concat(
+          getDocumentSymbolCompletions(document, position, word, this.symbolManager)
+        );
+        
+        // Check for function context - add corresponding templates
+        const enclosingFunction = this.findEnclosingFunction(document, position);
+        if (enclosingFunction) {
+          const functionSpecificCompletions = getFunctionSpecificCompletions(enclosingFunction.name);
+          if (functionSpecificCompletions.length > 0) {
+            completions = completions.concat(functionSpecificCompletions);
+          }
+        }
+        
+        // Add template completions
+        completions = completions.concat(
+          getTemplateCompletions(word)
+        );
+        
+        // Add type completions
+        if (word.length > 0) {
+          completions = completions.concat(
+            getTypeCompletions(word)
+          );
         }
       }
       
-      // Add template completions
-      completions = completions.concat(
-        getTemplateCompletions(word)
-      );
-      
-      // Add type completions
-      if (word.length > 0) {
-        completions = completions.concat(
-          getTypeCompletions(word)
-        );
-      }
-      
-      // Remove duplicates
-      return this.mergeAndDeduplicate(completions);
+      // Remove duplicates and sort by match type
+      return this.mergeAndDeduplicate(completions, word);
     } catch (error) {
       console.error(`Error providing completions: ${error}`);
       return [];
@@ -522,10 +536,62 @@ export class CompletionProvider {
   
   /**
    * Merge completions from different sources and remove duplicates,
-   * prioritizing items with better sortText values
+   * prioritizing items by match type: prefix, suffix, then fuzzy
    */
-  private mergeAndDeduplicate(completions: CompletionItem[]): CompletionItem[] {
-    // Sort completions by sortText first, so items with better priority come first
+  private mergeAndDeduplicate(completions: CompletionItem[], currentWord: string = ''): CompletionItem[] {
+    // Check if we're in an import context by examining all completions
+    const isImportContext = completions.some(item => {
+      const doc = item.documentation;
+      return item.detail?.includes('export from') || 
+             (typeof doc === 'object' && doc.value?.includes('exported from'));
+    });
+    
+    // Data structure templates that shouldn't appear in import contexts
+    const dataStructureKeywords = ['vector', 'array', 'list', 'set', 'map', 'object'];
+    
+    // Filter completions if in import context
+    if (isImportContext) {
+      completions = completions.filter(item => {
+        // Remove data structure templates in import context
+        if (dataStructureKeywords.includes(item.label.toLowerCase())) {
+          // Keep only if it has export metadata
+          return item.data && (
+            item.data.sourceModule || 
+            item.data.fullPath || 
+            item.detail?.includes('export from')
+          );
+        }
+        return true;
+      });
+    }
+    
+    // Ensure each item has a sortText that reflects match type priority
+    if (currentWord) {
+      const currentWordLower = currentWord.toLowerCase();
+      
+      for (const item of completions) {
+        const label = item.label.toLowerCase();
+        const originalSortText = item.sortText || item.label;
+        
+        // Already has priority prefix (e.g., "20-functionName") - keep the original prefix
+        const sortPrefix = originalSortText.includes('-') ? 
+          originalSortText.split('-')[0] : '99';
+          
+        // Add match type to sort text: 1=prefix, 2=suffix, 3=fuzzy
+        if (label.startsWith(currentWordLower)) {
+          // Prefix match (highest priority)
+          item.sortText = `${sortPrefix}-1-${item.label}`;
+        } else if (label.endsWith(currentWordLower)) {
+          // Suffix match (medium priority)
+          item.sortText = `${sortPrefix}-2-${item.label}`;
+        } else {
+          // Fuzzy match (lowest priority)
+          item.sortText = `${sortPrefix}-3-${item.label}`;
+        }
+      }
+    }
+    
+    // Sort completions by sortText
     completions.sort((a, b) => {
       const aSortText = a.sortText || a.label;
       const bSortText = b.sortText || b.label;
@@ -648,6 +714,16 @@ export class CompletionProvider {
     }
     
     return bestMatch;
+  }
+
+  // Simplify the isInImportVectorContext method to focus on what matters
+  private isInImportVectorContext(linePrefix: string, currentLine: string): boolean {
+    // Direct check for import statement with bracket
+    const importWithBracket = currentLine.includes('import') && 
+                              currentLine.match(/\(\s*import\s+\[/) !== null;
+    
+    console.log(`[HQL] Import context check: "${currentLine}" -> ${importWithBracket}`);
+    return importWithBracket;
   }
 }
 
