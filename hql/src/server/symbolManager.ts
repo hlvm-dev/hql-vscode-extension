@@ -105,6 +105,14 @@ export class SymbolManager {
   }
   
   /**
+   * Register an enum type with its cases
+   */
+  public registerEnumType(enumName: string, cases: string[]): void {
+    console.log(`[SymbolManager] Registering enum ${enumName} with cases: ${cases.join(', ')}`);
+    this.enumTypes.set(enumName, cases);
+  }
+  
+  /**
    * Update symbols for a document
    */
   public async updateDocumentSymbols(document: TextDocument): Promise<void> {

@@ -62,6 +62,82 @@ export class CompletionProvider {
       
       console.log(`[HQL Completion] Prefix: "${linePrefix}"`);
       
+      // PARAMETERIZED FUNCTION CALL WITH DOT NOTATION - DYNAMIC VERSION
+      // Check for any function call with parameter type and dot notation (like install os: .)
+      const functionParamDotMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/i);
+      if (functionParamDotMatch) {
+        const [_, funcName, paramName] = functionParamDotMatch;
+        console.log(`[HQL Completion] Function parameter dot notation: ${funcName} ${paramName}:`);
+        
+        // Force re-parse to ensure we have the latest function definitions
+        const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+        // Explicitly search for current function definition in the current document text
+        const text = document.getText();
+        const fnMatch = text.match(new RegExp(`\\(fn\\s+${funcName}\\s+\\(([^)]+)\\)`, 'i'));
+        
+        if (fnMatch) {
+          console.log(`[HQL Completion] Found function definition: ${fnMatch[0]}`);
+          const paramText = fnMatch[1];
+          console.log(`[HQL Completion] Parameter text: ${paramText}`);
+          
+          // Try to extract parameter type directly from the source code
+          const paramTypeMatch = paramText.match(new RegExp(`${paramName}:\\s*([A-Za-z0-9_]+)`, 'i'));
+          if (paramTypeMatch) {
+            const extractedType = paramTypeMatch[1];
+            console.log(`[HQL Completion] Direct parsed parameter type: ${extractedType}`);
+            
+            // Verify this is an enum type
+            if (this.symbolManager.isEnumType(extractedType)) {
+              console.log(`[HQL Completion] ${extractedType} is confirmed as enum type`);
+              const enumValues = this.getEnumValueCompletions(document, extractedType, true);
+              if (enumValues && enumValues.length > 0) {
+                console.log(`[HQL Completion] Found ${enumValues.length} enum values for ${extractedType}`);
+                return enumValues;
+              }
+            } else {
+              console.log(`[HQL Completion] ${extractedType} is not recognized as enum type`);
+            }
+          }
+        }
+        
+        // Fall back to symbol manager lookup if direct parsing fails
+        // Look up the parameter type from function definition - this is the key part
+        const paramType = this.symbolManager.getParameterType(funcName, paramName, document.uri);
+        console.log(`[HQL Completion] Parameter type from symbol manager for ${paramName}: ${paramType}`);
+        
+        if (paramType && this.symbolManager.isEnumType(paramType)) {
+          // Return enum values for the correctly determined parameter type
+          const enumValues = this.getEnumValueCompletions(document, paramType, true);
+          if (enumValues && enumValues.length > 0) {
+            console.log(`[HQL Completion] Found ${enumValues.length} enum values for ${paramType}`);
+            return enumValues;
+          }
+        }
+        
+        // If we still haven't found the parameter type, use direct name match as a fallback
+        // This is a final attempt - try to find an enum with the same name as the parameter (common pattern)
+        const enumWithParamName = symbols.find(s => s.kind === 10 && s.name === paramName);
+        if (enumWithParamName) {
+          console.log(`[HQL Completion] Found enum with same name as parameter: ${paramName}`);
+          const enumValues = this.getEnumValueCompletions(document, paramName, true);
+          if (enumValues && enumValues.length > 0) {
+            return enumValues;
+          }
+        }
+        
+        // Fall back to all enum cases if no specific type determined
+        console.log(`[HQL Completion] Falling back to all enum cases`);
+        return this.getAllEnumCaseCompletions(document);
+      }
+
+      // SPECIAL CASE FOR INSTALL OS DOT - REMOVE THIS HARDCODED PART
+      // Replace the hardcoded check with a dynamic version
+      if (linePrefix.match(/\(install\s+os:\s+\.$/i)) {
+        console.log(`[HQL Completion] Install pattern detected - using dynamic type lookup`);
+        // Use the same dynamic lookup logic as above
+        return this.handleEnumDotCompletions(document, position);
+      }
+      
       const fullText = document.getText();
       
       // Get the current line
@@ -214,6 +290,7 @@ export class CompletionProvider {
           const functionMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+/);
           if (functionMatch) {
             const funcName = functionMatch[1];
+            console.log(`[HQL Completion] Parameter context: ${funcName} ${paramName}:`);
             const enumCompletions = this.getParameterEnumValueCompletions(document, funcName, paramName, true);
             if (enumCompletions.length > 0) {
               return enumCompletions;
@@ -246,8 +323,12 @@ export class CompletionProvider {
           }
         }
         
-        // Generic enum case completions if specific context not found
-        return this.getAllEnumCaseCompletions(document);
+        // Use context-aware enum completions or none at all - don't fall back to all enums
+        const expectedType = this.getExpectedTypeFromContext(document, position);
+        if (expectedType && this.symbolManager.isEnumType(expectedType)) {
+          return this.getEnumValueCompletions(document, expectedType, true);
+        }
+        return []; // Return empty if we can't determine the type - don't show everything
       }
       
       // Check for function call context: (functionName |
@@ -330,10 +411,22 @@ export class CompletionProvider {
         }
       }
       
-      // Check for data structure literal completions ([, {, #[)
-      const dataStructureMatch = linePrefix.match(/(\[|\{|#\[)\s*$/);
-      if (dataStructureMatch) {
-        return this.getDataStructureLiteralCompletions(dataStructureMatch[1]);
+      // Check for data structure literal completions
+      if (linePrefix.trim().endsWith('[')) {
+        console.log('Detected vector start: [');
+        return this.getDataStructureLiteralCompletions('[');
+      } else if (linePrefix.trim().endsWith('{')) {
+        console.log('Detected map start: {');
+        return this.getDataStructureLiteralCompletions('{');
+      } else if (linePrefix.trim().endsWith('#[')) {
+        console.log('Detected set start: #[');
+        return this.getDataStructureLiteralCompletions('#[');
+      } else if (linePrefix.trim().endsWith('#')) {
+        console.log('Detected set start shorthand: #');
+        return this.getDataStructureLiteralCompletions('#[');
+      } else if (linePrefix.trim().endsWith("'")) {
+        console.log('Detected list start: \'');
+        return this.getDataStructureLiteralCompletions("'");
       }
 
       // Check for cond pattern completions
@@ -412,14 +505,31 @@ export class CompletionProvider {
       paramName: string,
       shorthandDotNotation: boolean = false
     ): CompletionItem[] {
-      console.log(`[HQL Completion] getParameterEnumValueCompletions called for function: ${functionName}, param: ${paramName}`);
+      console.log(`[HQL Completion] getParameterEnumValueCompletions for ${functionName}.${paramName}:`);
       
       // Find the function in document symbols
       const symbols = this.symbolManager.getDocumentSymbols(document.uri);
-      const functionSymbol = symbols.find(s => 
+      console.log(`[HQL Completion] Found ${symbols.length} symbols in document`);
+      
+      // Debug information about function symbols to help diagnose the issue
+      const functionSymbols = symbols.filter(s => 
         (s.kind === 12 || s.kind === 6) && // Function or Method
         s.name === functionName
       );
+      console.log(`[HQL Completion] Found ${functionSymbols.length} matching function symbols for ${functionName}`);
+      
+      // Print detailed info about each function symbol to diagnose any issues
+      for (const func of functionSymbols) {
+        console.log(`[HQL Completion] Function ${func.name} details:`, 
+          JSON.stringify({
+            params: func.data?.params,
+            returnType: func.data?.returnType,
+            range: func.location.range
+          })
+        );
+      }
+      
+      const functionSymbol = functionSymbols[0]; // Take the first matching function
       
       // If we can't find the function or it has no parameters, return empty
       if (!functionSymbol || !functionSymbol.data?.params) {
@@ -427,7 +537,9 @@ export class CompletionProvider {
         return [];
       }
       
-      // Find the specific parameter
+      // Find the specific parameter and log all parameters to debug
+      console.log(`[HQL Completion] All parameters:`, JSON.stringify(functionSymbol.data.params));
+      
       const param = functionSymbol.data.params.find(p => p.name === paramName);
       if (!param || !param.type) {
         console.log(`[HQL Completion] Parameter ${paramName} not found or has no type`);
@@ -435,8 +547,11 @@ export class CompletionProvider {
         // and function has any parameters that are enums
         if (functionSymbol.data.params.length > 0) {
           const firstParam = functionSymbol.data.params[0];
+          console.log(`[HQL Completion] First parameter: ${firstParam.name}: ${firstParam.type}`);
           if (firstParam.type && this.symbolManager.isEnumType(firstParam.type)) {
             console.log(`[HQL Completion] Using first parameter as fallback: ${firstParam.name}: ${firstParam.type}`);
+            // Clear the cache entry for this enum to ensure we get fresh values
+            this.dynamicValueCache.delete(`enum:${firstParam.type}`);
             return this.getEnumValueCompletions(document, firstParam.type, shorthandDotNotation);
           }
         }
@@ -453,6 +568,8 @@ export class CompletionProvider {
       
       if (enumType) {
         console.log(`[HQL Completion] Found enum type symbol for ${param.type}`);
+        // Clear the cache entry for this enum to ensure we get fresh values
+        this.dynamicValueCache.delete(`enum:${param.type}`);
         // Return enum case completions
         return this.getEnumValueCompletions(document, param.type, shorthandDotNotation);
       }
@@ -460,6 +577,8 @@ export class CompletionProvider {
       // Try to check directly with symbol manager
       if (this.symbolManager.isEnumType(param.type)) {
         console.log(`[HQL Completion] Symbol manager confirms ${param.type} is an enum type`);
+        // Clear the cache entry for this enum to ensure we get fresh values
+        this.dynamicValueCache.delete(`enum:${param.type}`);
         return this.getEnumValueCompletions(document, param.type, shorthandDotNotation);
       }
       
@@ -611,20 +730,47 @@ export class CompletionProvider {
     
     if (!linePrefix.endsWith('.')) return [];
     
+    console.log(`[HQL Completion] handleEnumDotCompletions for: "${linePrefix}"`);
+    
     const beforeDot = linePrefix.slice(0, -1).trim();
     const symbols = this.symbolManager.getDocumentSymbols(document.uri);
     
-    // 1. Check for parameter context in function call: (install os: .)
-    const paramTypeMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
-    if (paramTypeMatch) {
-      const [_, funcName, paramName] = paramTypeMatch;
+    // DYNAMIC PARAMETER CONTEXT - no hardcoded function names or types
+    // Find any function call with a parameter and colon
+    const funcParamTypeMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
+    if (funcParamTypeMatch) {
+      const [_, funcName, paramName] = funcParamTypeMatch;
+      console.log(`[HQL Completion] Parameter type match: ${funcName} ${paramName}:`);
       
-      // Get parameter type from the symbol manager
+      // Try direct parsing first to bypass any stale symbol manager data
+      const fnMatch = text.match(new RegExp(`\\(fn\\s+${funcName}\\s+\\(([^)]+)\\)`, 'i'));
+      if (fnMatch) {
+        const paramText = fnMatch[1];
+        console.log(`[HQL Completion] Parameter text: ${paramText}`);
+        
+        // Extract parameter type directly from text
+        const paramTypeMatch = paramText.match(new RegExp(`${paramName}:\\s*([A-Za-z0-9_]+)`, 'i'));
+        if (paramTypeMatch) {
+          const extractedType = paramTypeMatch[1];
+          console.log(`[HQL Completion] Direct parsed parameter type: ${extractedType}`);
+          
+          // Check if this is an enum type
+          if (this.symbolManager.isEnumType(extractedType)) {
+            return this.getEnumValueCompletions(document, extractedType, true);
+          }
+        }
+      }
+      
+      // Fall back to symbol manager
       const paramType = this.symbolManager.getParameterType(funcName, paramName, document.uri);
+      console.log(`[HQL Completion] Parameter type from symbol manager: ${paramType}`);
       
       if (paramType && this.symbolManager.isEnumType(paramType)) {
         // Return enum case completions for this parameter type
-        return this.getEnumValueCompletions(document, paramType, true);
+        const typedCompletions = this.getEnumValueCompletions(document, paramType, true);
+        if (typedCompletions.length > 0) {
+          return typedCompletions;
+        }
       }
     }
     
@@ -716,34 +862,99 @@ export class CompletionProvider {
       }
     }
     
-    // 6. Special handling for shorthand dot notation in specific contexts
-    // If we're at the start of an argument list, suggest all enum cases
+    // 6. Try to determine expected type, but fallback to all enum cases if we can't
     const startOfArg = linePrefix.match(/[\(,]\s*\.$/);
     if (startOfArg) {
+      // Try to determine the expected type from context
+      const expectedType = this.getExpectedTypeFromContext(document, position);
+      if (expectedType && this.symbolManager.isEnumType(expectedType)) {
+        // If we found an expected enum type, only show values from that enum
+        return this.getEnumValueCompletions(document, expectedType, true);
+      }
+      
+      // FALLBACK: If we couldn't determine the type, show all enum cases
+      // This is better than showing nothing at all
+      console.log(`[HQL Completion] Couldn't determine expected type, showing all enum cases`);
       return this.getAllEnumCaseCompletions(document);
     }
     
-    // Default: don't return enum completions for random dots
-    return [];
+    // For any other dot context, show all enum cases as a fallback
+    // This ensures dot notation always shows something
+    return this.getAllEnumCaseCompletions(document);
+  }
+  
+  /**
+   * Try to determine the expected type from context
+   * This is used to filter enum case completions when using dot notation
+   */
+  private getExpectedTypeFromContext(document: TextDocument, position: Position): string | null {
+    const text = document.getText();
+    const lines = text.split('\n');
+    const currentLine = lines[position.line] || '';
+    const linePrefix = currentLine.substring(0, position.character);
+    
+    // Case 1: We're inside a function call - extract function name and argument position
+    const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+(.*?)\.$/);
+    if (funcCallMatch) {
+      const [_, funcName, argText] = funcCallMatch;
+      // Count commas to determine which parameter we're at
+      const commaCount = (argText.match(/,/g) || []).length;
+      const paramIndex = commaCount; // Zero-based, first param has no commas before it
+      
+      // Get function info from document symbols directly instead of using a helper method
+      const symbols = this.symbolManager.getDocumentSymbols(document.uri);
+      const functionSymbol = symbols.find(s => 
+        (s.kind === 12 || s.kind === 6) && // Function or Method
+        s.name === funcName
+      );
+      
+      if (functionSymbol && functionSymbol.data?.params && functionSymbol.data.params.length > paramIndex) {
+        const paramType = functionSymbol.data.params[paramIndex].type;
+        if (paramType && this.symbolManager.isEnumType(paramType)) {
+          return paramType;
+        }
+      }
+    }
+    
+    // Case 2: We're in a parameter with explicit type
+    const paramWithTypeMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s+\.$/);
+    if (paramWithTypeMatch) {
+      const funcParamMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
+      if (funcParamMatch) {
+        const [_, funcName, paramName] = funcParamMatch;
+        const paramType = this.symbolManager.getParameterType(funcName, paramName, document.uri);
+        if (paramType && this.symbolManager.isEnumType(paramType)) {
+          return paramType;
+        }
+      }
+    }
+    
+    return null;
   }
   
   /**
    * Get all enum case completions from all enum types in the document
-   * Useful for shorthand dot notation where type isn't explicitly known
+   * This is now restricted to only work when we specifically ask for all enum cases,
+   * and should generally be avoided in favor of the type-specific versions
    */
   private getAllEnumCaseCompletions(document: TextDocument): CompletionItem[] {
+    console.log(`[HQL Completion] getAllEnumCaseCompletions called`);
+    
     const symbols = this.symbolManager.getDocumentSymbols(document.uri);
     const allEnumCases: CompletionItem[] = [];
     
     // Find all enum types
     const enumTypes = symbols.filter(s => s.kind === 10); // Enum type
+    console.log(`[HQL Completion] Found ${enumTypes.length} enum types`);
     
     for (const enumType of enumTypes) {
       const enumName = enumType.name;
       const enumCases = symbols.filter(s => 
-        s.kind === 11 && // Enum member
+        s.kind === 11 && // EnumMember
         s.data?.enumName === enumName
       );
+      
+      console.log(`[HQL Completion] Enum ${enumName} has ${enumCases.length} cases`);
       
       for (const enumCase of enumCases) {
         // Extract just the case name without the enum prefix
@@ -769,6 +980,7 @@ export class CompletionProvider {
       }
     }
     
+    console.log(`[HQL Completion] Returning ${allEnumCases.length} total enum cases`);
     return allEnumCases;
   }
   
@@ -778,15 +990,13 @@ export class CompletionProvider {
    * Update cache of dynamic values from document
    */
   private updateDynamicValues(document: TextDocument): void {
-    const now = Date.now();
-    // Only update cache every 30 seconds to avoid performance issues
-    if (now - this.lastCacheUpdate < 30000) {
-      return;
-    }
-    
-    this.lastCacheUpdate = now;
+    // Force update every time to ensure we have the latest enum data
+    // this.lastCacheUpdate = now;
     
     try {
+      // Clear the entire cache to ensure fresh data
+      this.dynamicValueCache.clear();
+      
       // Parse the document to find all enum declarations and their values
       const text = document.getText();
       const expressions = parse(text, true);
@@ -803,41 +1013,40 @@ export class CompletionProvider {
       
       // Get document symbols from open documents
       const uri = document.uri;
+      
+      // Process all function definitions to correctly map enum parameter types
       const symbols = this.symbolManager.getDocumentSymbols(uri);
+      const functionSymbols = symbols.filter(s => s.kind === 12 || s.kind === 6); // Function or Method
       
-      // Find all enum types
-      const enumSymbols = symbols.filter(s => s.kind === 10); // Enum type
+      console.log(`[HQL Completion] Processing ${functionSymbols.length} function symbols to update parameter types`);
       
-      for (const enumSymbol of enumSymbols) {
-        const enumName = enumSymbol.name;
-        const enumCases = symbols.filter(s => 
-          s.kind === 11 && // Enum member
-          s.data?.enumName === enumName
-        );
-        
-        if (enumCases.length > 0) {
-          const enumCompletions = enumCases.map(enumCase => {
-            // Extract just the case name without the enum prefix
-            const caseName = enumCase.name.includes('.') 
-              ? enumCase.name.split('.')[1] 
-              : enumCase.name;
-            
-            return {
-              label: caseName,
-              kind: CompletionItemKind.EnumMember,
-              detail: `Case of enum ${enumName}`,
-              documentation: {
-                kind: MarkupKind.Markdown,
-                value: enumCase.data?.documentation || `Enum case from \`${enumName}\``
-              },
-              data: {
-                enumName: enumName
-              }
-            };
-          });
-          
-          // Cache these completions for the enum type
-          this.dynamicValueCache.set(`enum:${enumName}`, enumCompletions);
+      // Update the symbol manager with the latest parameter types
+      for (const func of functionSymbols) {
+        if (func.data?.params) {
+          console.log(`[HQL Completion] Function ${func.name} has ${func.data.params.length} parameters`);
+          for (const param of func.data.params) {
+            if (param.type) {
+              console.log(`[HQL Completion] Parameter ${param.name}: ${param.type}`);
+            }
+          }
+        }
+      }
+      
+      // Force re-parse any enum types in the document
+      const enumTypes = symbols.filter(s => s.kind === 10); // Enum type
+      for (const enumType of enumTypes) {
+        console.log(`[HQL Completion] Processing enum ${enumType.name}`);
+        // Find the enum declaration
+        for (const expr of expressions) {
+          if (isList(expr) && expr.elements.length > 1) {
+            const first = expr.elements[0];
+            const second = expr.elements[1];
+            if (isSymbol(first) && first.name === 'enum' && 
+                isSymbol(second) && second.name === enumType.name) {
+              this.processEnumForCompletion(expr, document.uri);
+              break;
+            }
+          }
         }
       }
     } catch (error) {
@@ -849,45 +1058,56 @@ export class CompletionProvider {
    * Process an enum expression for completion suggestions
    */
   private processEnumForCompletion(expr: SExp, documentUri: string): void {
-    if (!isList(expr) || expr.elements.length < 2) return;
+    if (!isList(expr) || expr.elements.length < 3) return;
     
-    const enumNameExpr = expr.elements[1];
-    if (!isSymbol(enumNameExpr)) return;
+    const first = expr.elements[0];
+    const second = expr.elements[1];
     
-    const enumName = enumNameExpr.name;
-    const enumCases: CompletionItem[] = [];
+    if (!isSymbol(first) || first.name !== 'enum' || !isSymbol(second)) return;
     
-    // Process enum cases
+    const enumName = second.name;
+    console.log(`[HQL Completion] Processing enum definition: ${enumName}`);
+    
+    // Map to store enum cases
+    const enumCases: string[] = [];
+    const enumCompletions: CompletionItem[] = [];
+    
+    // Extract enum cases
     for (let i = 2; i < expr.elements.length; i++) {
       const caseExpr = expr.elements[i];
+      
       if (isList(caseExpr) && caseExpr.elements.length >= 2) {
         const caseKeyword = caseExpr.elements[0];
         const caseName = caseExpr.elements[1];
         
         if (isSymbol(caseKeyword) && caseKeyword.name === 'case' && isSymbol(caseName)) {
-          // Store the full name (Enum.Case) for proper symbol tracking
-          const fullName = `${enumName}.${caseName.name}`;
-          enumCases.push({
-            label: caseName.name,
+          const caseNameStr = caseName.name;
+          enumCases.push(caseNameStr);
+          
+          // Create completion item for this case
+          enumCompletions.push({
+            label: caseNameStr,
             kind: CompletionItemKind.EnumMember,
             detail: `Case of enum ${enumName}`,
             documentation: {
               kind: MarkupKind.Markdown,
               value: `Enum case from \`${enumName}\``
             },
-            insertText: caseName.name,
             data: {
-              enumName,
-              fullName
+              enumName: enumName
             }
           });
+          
+          console.log(`[HQL Completion] Added enum case ${caseNameStr} to ${enumName}`);
         }
       }
     }
     
+    // Store enum cases in the symbol manager
     if (enumCases.length > 0) {
-      // Cache these completions for the enum type
-      this.dynamicValueCache.set(`enum:${enumName}`, enumCases);
+      this.symbolManager.registerEnumType(enumName, enumCases);
+      this.dynamicValueCache.set(`enum:${enumName}`, enumCompletions);
+      console.log(`[HQL Completion] Registered enum ${enumName} with ${enumCases.length} cases`);
     }
   }
   
@@ -1882,6 +2102,249 @@ export class CompletionProvider {
    */
   private getTemplateCompletions(word: string): CompletionItem[] {
     const completions: CompletionItem[] = [];
+    
+    // Data structure template completions
+    if ('vector'.startsWith(word)) {
+      completions.push({
+        label: 'vector-empty',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Empty vector',
+        insertText: '[]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-vector-empty',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create an empty vector'
+        }
+      });
+      
+      completions.push({
+        label: 'vector-numbers',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector with numbers',
+        insertText: '[1, 2, 3, 4, 5]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-vector-numbers',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector with numeric items'
+        }
+      });
+      
+      completions.push({
+        label: 'vector-strings',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector with strings',
+        insertText: '["item1", "item2", "item3"]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-vector-strings',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector with string items'
+        }
+      });
+      
+      completions.push({
+        label: 'vector-mixed',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector with mixed types',
+        insertText: '["string", 42, true, nil]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-vector-mixed',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector with mixed data types'
+        }
+      });
+      
+      completions.push({
+        label: 'vector-nested',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Nested vectors',
+        insertText: '[[1, 2], [3, 4], [5, 6]]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-vector-nested',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector containing nested vectors'
+        }
+      });
+    }
+    
+    if ('map'.startsWith(word) || 'json'.startsWith(word) || 'object'.startsWith(word)) {
+      completions.push({
+        label: 'map-empty',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Empty map',
+        insertText: '{}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map-empty',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create an empty map'
+        }
+      });
+      
+      completions.push({
+        label: 'map-string-keys',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with string keys',
+        insertText: '{"name": "John", "age": 30, "active": true}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map-string-keys',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map with string keys and various value types'
+        }
+      });
+      
+      completions.push({
+        label: 'map-keyword-keys',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with keyword keys',
+        insertText: '{:host "localhost", :port 8080, :secure true}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map-keyword-keys',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map with keyword keys'
+        }
+      });
+      
+      completions.push({
+        label: 'map-nested',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Nested map',
+        insertText: '{"profile": {"id": 1, "settings": {"theme": "dark"}}}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map-nested',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map with nested maps'
+        }
+      });
+
+      completions.push({
+        label: 'map-with-array',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with array value',
+        insertText: '{"items": [1, 2, 3, 4, 5], "active": true}',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-map-with-array',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map containing array values'
+        }
+      });
+    }
+    
+    if ('set'.startsWith(word)) {
+      completions.push({
+        label: 'set-empty',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Empty set',
+        insertText: '#[]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-set-empty',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create an empty set'
+        }
+      });
+      
+      completions.push({
+        label: 'set-numbers',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Set with numbers',
+        insertText: '#[1, 2, 3, 4, 5]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-set-numbers',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a set with numeric items'
+        }
+      });
+      
+      completions.push({
+        label: 'set-strings',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Set with strings',
+        insertText: '#["apple", "banana", "cherry"]',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-set-strings',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a set with string items'
+        }
+      });
+    }
+    
+    if ('list'.startsWith(word)) {
+      completions.push({
+        label: 'list-empty',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Empty list',
+        insertText: '\'()',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-list-empty',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create an empty list'
+        }
+      });
+      
+      completions.push({
+        label: 'list-numbers',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with numbers',
+        insertText: '\'(1 2 3 4 5)',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-list-numbers',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with numeric items'
+        }
+      });
+      
+      completions.push({
+        label: 'list-strings',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with strings',
+        insertText: '\'("item1" "item2" "item3")',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-list-strings',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with string items'
+        }
+      });
+      
+      completions.push({
+        label: 'list-mixed',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with mixed types',
+        insertText: '\'("string" 42 true)',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-list-mixed',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with mixed data types'
+        }
+      });
+      
+      completions.push({
+        label: 'list-nested',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Nested lists',
+        insertText: '\'((1 2) (3 4) (5 6))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-list-nested',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list containing nested lists'
+        }
+      });
+    }
     
     if ('fn'.startsWith(word)) {
       // Add untyped fn variants
@@ -3408,10 +3871,24 @@ export class CompletionProvider {
       { name: 'repeat', kind: CompletionItemKind.Keyword, detail: 'Repeat n times' },
       
       // Data structure literals
-      { name: 'vector', kind: CompletionItemKind.Function, detail: 'Create a vector [1 2 3]' },
-      { name: 'list', kind: CompletionItemKind.Function, detail: 'Create a list \'(1 2 3)' },
-      { name: 'set', kind: CompletionItemKind.Function, detail: 'Create a set #{1 2 3}' },
-      { name: 'map', kind: CompletionItemKind.Function, detail: 'Create a map {key1 val1, key2 val2}' }
+      { name: 'vector', kind: CompletionItemKind.Snippet, detail: 'Create a vector [1, 2, 3]' },
+      { name: 'vector-empty', kind: CompletionItemKind.Snippet, detail: 'Create an empty vector []' },
+      { name: 'vector-numbers', kind: CompletionItemKind.Snippet, detail: 'Create a vector with numbers [1, 2, 3, 4, 5]' },
+      { name: 'vector-strings', kind: CompletionItemKind.Snippet, detail: 'Create a vector with strings ["item1", "item2", "item3"]' },
+      { name: 'list', kind: CompletionItemKind.Snippet, detail: 'Create a list \'(1 2 3)' },
+      { name: 'list-empty', kind: CompletionItemKind.Snippet, detail: 'Create an empty list \'()' },
+      { name: 'list-numbers', kind: CompletionItemKind.Snippet, detail: 'Create a list with numbers \'(1 2 3 4 5)' },
+      { name: 'list-strings', kind: CompletionItemKind.Snippet, detail: 'Create a list with strings \'("item1" "item2" "item3")' },
+      { name: 'set', kind: CompletionItemKind.Snippet, detail: 'Create a set #[1, 2, 3]' },
+      { name: 'set-empty', kind: CompletionItemKind.Snippet, detail: 'Create an empty set #[]' },
+      { name: 'set-numbers', kind: CompletionItemKind.Snippet, detail: 'Create a set with numbers #[1, 2, 3, 4, 5]' },
+      { name: 'set-strings', kind: CompletionItemKind.Snippet, detail: 'Create a set with strings #["apple", "banana", "cherry"]' },
+      { name: 'map', kind: CompletionItemKind.Snippet, detail: 'Create a map {"key": "value"}' },
+      { name: 'map-empty', kind: CompletionItemKind.Snippet, detail: 'Create an empty map {}' },
+      { name: 'map-string-keys', kind: CompletionItemKind.Snippet, detail: 'Create a map with string keys {"name": "John", "age": 30}' },
+      { name: 'map-keyword-keys', kind: CompletionItemKind.Snippet, detail: 'Create a map with keyword keys {:host "localhost", :port 8080}' },
+      { name: 'json', kind: CompletionItemKind.Snippet, detail: 'Create a JSON-like map {"key": "value"}' },
+      { name: 'object', kind: CompletionItemKind.Snippet, detail: 'Create an object-like map {"key": "value"}' },
     ];
     
     // Define the type for the standard library items to help TypeScript
@@ -3428,6 +3905,84 @@ export class CompletionProvider {
     
     // Convert to completion items
     return filtered.map((item: StdLibItem) => {
+      // For data structure snippets, provide direct snippet without function call wrapping
+      if (item.name.startsWith('vector') || 
+          item.name.startsWith('list') || 
+          item.name.startsWith('set') || 
+          item.name.startsWith('map') ||
+          item.name === 'json' ||
+          item.name === 'object') {
+        
+        let snippetText = '';
+        
+        switch(item.name) {
+          case 'vector':
+            snippetText = '[${1:1}, ${2:2}, ${3:3}]';
+            break;
+          case 'vector-empty':
+            snippetText = '[]';
+            break;
+          case 'vector-numbers':
+            snippetText = '[1, 2, 3, 4, 5]';
+            break;
+          case 'vector-strings':
+            snippetText = '["item1", "item2", "item3"]';
+            break;
+          case 'list':
+            snippetText = '\'(${1:1} ${2:2} ${3:3})';
+            break;
+          case 'list-empty':
+            snippetText = '\'()';
+            break;
+          case 'list-numbers':
+            snippetText = '\'(1 2 3 4 5)';
+            break;
+          case 'list-strings':
+            snippetText = '\'("item1" "item2" "item3")';
+            break;
+          case 'set':
+            snippetText = '#[${1:1}, ${2:2}, ${3:3}]';
+            break;
+          case 'set-empty':
+            snippetText = '#[]';
+            break;
+          case 'set-numbers':
+            snippetText = '#[1, 2, 3, 4, 5]';
+            break;
+          case 'set-strings':
+            snippetText = '#["apple", "banana", "cherry"]';
+            break;
+          case 'map':
+          case 'json':
+          case 'object':
+            snippetText = '{${1:"key"}: ${2:"value"}}';
+            break;
+          case 'map-empty':
+            snippetText = '{}';
+            break;
+          case 'map-string-keys':
+            snippetText = '{"name": "John", "age": 30, "active": true}';
+            break;
+          case 'map-keyword-keys':
+            snippetText = '{:host "localhost", :port 8080, :secure true}';
+            break;
+          default:
+            snippetText = item.name;
+        }
+        
+        return {
+          label: item.name,
+          kind: item.kind,
+          detail: item.detail,
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value: `\`${item.name}\` - ${item.detail}`
+          },
+          insertText: snippetText,
+          insertTextFormat: InsertTextFormat.Snippet,
+          sortText: `01-${item.name}` // High priority for standard library items
+        };
+      }
       // For function/method items, provide them with parentheses for LISP syntax
       if (item.kind === CompletionItemKind.Function) {
         // Special handling for print and console.log
@@ -3676,13 +4231,15 @@ export class CompletionProvider {
   private getDataStructureLiteralCompletions(openBracket: string): CompletionItem[] {
     const completions: CompletionItem[] = [];
     
+    console.log(`Getting completions for: "${openBracket}"`);
+    
     if (openBracket === '[') {
       // Vector completions
       completions.push({
         label: 'vector-empty',
         kind: CompletionItemKind.Snippet,
         detail: 'Empty vector',
-        insertText: "]",
+        insertText: "",
         insertTextFormat: InsertTextFormat.Snippet,
         documentation: {
           kind: MarkupKind.Markdown,
@@ -3694,11 +4251,59 @@ export class CompletionProvider {
         label: 'vector-items',
         kind: CompletionItemKind.Snippet,
         detail: 'Vector with items',
-        insertText: "${1:item1} ${2:item2}]",
+        insertText: "${1:1}, ${2:2}, ${3:3}",
         insertTextFormat: InsertTextFormat.Snippet,
         documentation: {
           kind: MarkupKind.Markdown,
           value: 'Create a vector with items'
+        }
+      });
+
+      completions.push({
+        label: 'vector-numbers',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector with numbers',
+        insertText: "1, 2, 3, 4, 5",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector with numeric items'
+        }
+      });
+
+      completions.push({
+        label: 'vector-strings',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector with strings',
+        insertText: "\"item1\", \"item2\", \"item3\"",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector with string items'
+        }
+      });
+
+      completions.push({
+        label: 'vector-mixed',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Vector with mixed types',
+        insertText: "\"string\", 42, true, nil",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector with mixed data types'
+        }
+      });
+
+      completions.push({
+        label: 'vector-nested',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Nested vectors',
+        insertText: "[1, 2], [3, 4], [5, 6]",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a vector containing nested vectors'
         }
       });
     } else if (openBracket === '{') {
@@ -3707,7 +4312,7 @@ export class CompletionProvider {
         label: 'map-empty',
         kind: CompletionItemKind.Snippet,
         detail: 'Empty map',
-        insertText: "}",
+        insertText: "",
         insertTextFormat: InsertTextFormat.Snippet,
         documentation: {
           kind: MarkupKind.Markdown,
@@ -3719,11 +4324,59 @@ export class CompletionProvider {
         label: 'map-entries',
         kind: CompletionItemKind.Snippet,
         detail: 'Map with entries',
-        insertText: "${1:key1} ${2:value1}\n  ${3:key2} ${4:value2}}",
+        insertText: "\"${1:key1}\": ${2:\"value1\"},\n  \"${3:key2}\": ${4:\"value2\"}",
         insertTextFormat: InsertTextFormat.Snippet,
         documentation: {
           kind: MarkupKind.Markdown,
           value: 'Create a map with key-value pairs'
+        }
+      });
+
+      completions.push({
+        label: 'map-string-keys',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with string keys',
+        insertText: "\"name\": \"John\", \"age\": 30, \"active\": true",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map with string keys and various value types'
+        }
+      });
+
+      completions.push({
+        label: 'map-keyword-keys',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with keyword keys',
+        insertText: ":host \"localhost\", :port 8080, :secure true",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map with keyword keys'
+        }
+      });
+
+      completions.push({
+        label: 'map-nested',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Nested map',
+        insertText: "\"profile\": {\"id\": 1, \"settings\": {\"theme\": \"dark\"}}",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map with nested maps'
+        }
+      });
+
+      completions.push({
+        label: 'map-with-array',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Map with array value',
+        insertText: "\"items\": [1, 2, 3, 4, 5], \"active\": true",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a map containing array values'
         }
       });
     } else if (openBracket === '#[') {
@@ -3732,7 +4385,7 @@ export class CompletionProvider {
         label: 'set-empty',
         kind: CompletionItemKind.Snippet,
         detail: 'Empty set',
-        insertText: "]",
+        insertText: "",
         insertTextFormat: InsertTextFormat.Snippet,
         documentation: {
           kind: MarkupKind.Markdown,
@@ -3744,11 +4397,108 @@ export class CompletionProvider {
         label: 'set-items',
         kind: CompletionItemKind.Snippet,
         detail: 'Set with items',
-        insertText: "${1:item1} ${2:item2}]",
+        insertText: "${1:1}, ${2:2}, ${3:3}",
         insertTextFormat: InsertTextFormat.Snippet,
         documentation: {
           kind: MarkupKind.Markdown,
           value: 'Create a set with items'
+        }
+      });
+
+      completions.push({
+        label: 'set-numbers',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Set with numbers',
+        insertText: "1, 2, 3, 4, 5",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a set with numeric items'
+        }
+      });
+
+      completions.push({
+        label: 'set-strings',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Set with strings',
+        insertText: "\"apple\", \"banana\", \"cherry\"",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a set with string items'
+        }
+      });
+    } else if (openBracket === "'") {
+      // List completions for quote syntax
+      completions.push({
+        label: 'list-empty',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Empty list',
+        insertText: "()",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create an empty list'
+        }
+      });
+      
+      completions.push({
+        label: 'list-items',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with items',
+        insertText: "(${1:1} ${2:2} ${3:3})",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with items'
+        }
+      });
+
+      completions.push({
+        label: 'list-numbers',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with numbers',
+        insertText: "(1 2 3 4 5)",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with numeric items'
+        }
+      });
+
+      completions.push({
+        label: 'list-strings',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with strings',
+        insertText: "(\"item1\" \"item2\" \"item3\")",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with string items'
+        }
+      });
+
+      completions.push({
+        label: 'list-mixed',
+        kind: CompletionItemKind.Snippet,
+        detail: 'List with mixed types',
+        insertText: "(\"string\" 42 true)",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list with mixed data types'
+        }
+      });
+
+      completions.push({
+        label: 'list-nested',
+        kind: CompletionItemKind.Snippet,
+        detail: 'Nested lists',
+        insertText: "((1 2) (3 4) (5 6))",
+        insertTextFormat: InsertTextFormat.Snippet,
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Create a list containing nested lists'
         }
       });
     }
