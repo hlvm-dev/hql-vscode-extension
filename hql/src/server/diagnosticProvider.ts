@@ -2,12 +2,15 @@ import {
   TextDocument,
   Diagnostic,
   DiagnosticSeverity,
-  Connection
+  Connection,
+  Range,
+  Position
 } from 'vscode-languageserver';
 
 import { parse, ParseError } from '../parser';
 import { SymbolManager } from './symbolManager';
 import { isList, isSymbol } from '../s-exp/types';
+import { SList, SSymbol } from '../s-exp/types';
 
 /**
  * DiagnosticsProvider handles validation and errors in HQL files
@@ -35,6 +38,12 @@ export class DiagnosticsProvider {
         // Try to parse the document with tolerant mode first to avoid unnecessary
         // diagnostic errors during typing
         const expressions = parse(text, true);
+        
+        // Check for reserved keywords first - this needs to be immediate
+        this.checkReservedKeywords(textDocument, expressions, diagnostics);
+        
+        // Send diagnostics immediately for reserved keywords
+        connection.sendDiagnostics({ uri: textDocument.uri, diagnostics: [...diagnostics] });
         
         // Only perform stricter validation if tolerant parsing succeeded
         // or if thorough validation is requested (e.g., on save)
@@ -66,6 +75,9 @@ export class DiagnosticsProvider {
         
         // Check for undefined symbols
         await this.checkUndefinedSymbols(textDocument, expressions, diagnostics);
+
+        // Send final diagnostics including all checks
+        connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
       } catch (error) {
         // If tolerant parsing also fails, the code is very broken, so just report the error
         if (error instanceof ParseError) {
@@ -78,13 +90,11 @@ export class DiagnosticsProvider {
             message: error.message,
             source: 'hql'
           });
+          connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
         } else {
           console.error(`Unhandled error in validation: ${error}`);
         }
       }
-      
-      // Send the diagnostics to the client
-      connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
     } catch (error) {
       console.error(`Error validating document: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -691,5 +701,81 @@ export class DiagnosticsProvider {
       // IO and debugging
       'print', 'println'
     ];
+  }
+
+  private checkReservedKeywords(document: TextDocument, expressions: any[], diagnostics: Diagnostic[]): void {
+    const reservedKeywords = ['vector'];
+
+    for (const expr of expressions) {
+      if (isList(expr)) {
+        const list = expr as SList;
+        
+        // Check if this is a definition (fn, let, var, etc.)
+        if (list.elements.length > 1 && 
+            isSymbol(list.elements[0]) && 
+            isSymbol(list.elements[1])) {
+            
+            const keyword = (list.elements[0] as SSymbol).name;
+            const symbolName = (list.elements[1] as SSymbol).name;
+            const symbolPos = (list.elements[1] as SSymbol).position;
+            
+            // Check for reserved keyword usage in definitions
+            if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct', 'macro'].includes(keyword)) {
+                if (reservedKeywords.includes(symbolName.toLowerCase())) {
+                    if (symbolPos) {
+                        // Convert 1-based line/column to 0-based
+                        const range = Range.create(
+                            Position.create(symbolPos.line - 1, symbolPos.column - 1),
+                            Position.create(symbolPos.line - 1, symbolPos.column - 1 + symbolName.length)
+                        );
+                        
+                        diagnostics.push({
+                            severity: DiagnosticSeverity.Error,
+                            range,
+                            message: `'${symbolName}' is a reserved keyword and cannot be used as a symbol name`,
+                            source: 'HQL'
+                        });
+                    }
+                }
+            }
+        }
+
+        // Check for reserved keywords in import statements
+        if (list.elements.length > 1 && 
+            isSymbol(list.elements[0]) && 
+            (list.elements[0] as SSymbol).name === 'import') {
+            
+            // Check vector-style imports: (import [sym1, sym2] from "...")
+            if (isList(list.elements[1])) {
+                const importList = list.elements[1] as SList;
+                for (const element of importList.elements) {
+                    if (isSymbol(element)) {
+                        const symbolName = (element as SSymbol).name;
+                        const symbolPos = (element as SSymbol).position;
+                        if (reservedKeywords.includes(symbolName.toLowerCase())) {
+                            if (symbolPos) {
+                                // Convert 1-based line/column to 0-based
+                                const range = Range.create(
+                                    Position.create(symbolPos.line - 1, symbolPos.column - 1),
+                                    Position.create(symbolPos.line - 1, symbolPos.column - 1 + symbolName.length)
+                                );
+                                
+                                diagnostics.push({
+                                    severity: DiagnosticSeverity.Error,
+                                    range,
+                                    message: `Cannot import reserved keyword '${symbolName}'`,
+                                    source: 'HQL'
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recursively check nested expressions
+        this.checkReservedKeywords(document, list.elements, diagnostics);
+      }
+    }
   }
 }

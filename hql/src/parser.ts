@@ -279,15 +279,15 @@ function parseExpressionByTokenType(token: Token, state: ParserState): SExp {
     case TokenType.LeftBrace: return parseMap(state);
     case TokenType.RightBrace: throw new ParseError("Unexpected '}'", token.position, state.input);
     case TokenType.HashLeftBracket: return parseSet(state);
-    case TokenType.Quote: return createList(createSymbol("quote"), parseExpression(state));
-    case TokenType.Backtick: return createList(createSymbol("quasiquote"), parseExpression(state));
-    case TokenType.Unquote: return createList(createSymbol("unquote"), parseExpression(state));
-    case TokenType.UnquoteSplicing: return createList(createSymbol("unquote-splicing"), parseExpression(state));
-    case TokenType.Comma: return createSymbol(",");
+    case TokenType.Quote: return createList(createSymbol("quote", token.position), parseExpression(state));
+    case TokenType.Backtick: return createList(createSymbol("quasiquote", token.position), parseExpression(state));
+    case TokenType.Unquote: return createList(createSymbol("unquote", token.position), parseExpression(state));
+    case TokenType.UnquoteSplicing: return createList(createSymbol("unquote-splicing", token.position), parseExpression(state));
+    case TokenType.Comma: return createSymbol(",", token.position);
     case TokenType.Dot: return parseDotAccess(state, token);
     case TokenType.String: return parseStringLiteral(token.value);
     case TokenType.Number: return createNumberLiteral(Number(token.value));
-    case TokenType.Symbol: return parseSymbol(token.value);
+    case TokenType.Symbol: return parseSymbol(token.value, token);
     default: throw new ParseError(`Unexpected token type: ${token.type}`, token.position, state.input);
   }
 }
@@ -314,26 +314,29 @@ function parseStringLiteral(tokenValue: string): SExp {
 /**
  * Parse a symbol, handling special cases like true, false, nil
  */
-function parseSymbol(tokenValue: string): SExp {
+function parseSymbol(tokenValue: string, token: Token): SExp {
+  // Always include position information for all symbols
+  const position = token.position;
+  
   if (tokenValue === "true") return createBooleanLiteral(true);
   if (tokenValue === "false") return createBooleanLiteral(false);
   if (tokenValue === "nil") return createNilLiteral();
-  if (tokenValue.startsWith(".")) return createSymbol(tokenValue);
+  if (tokenValue.startsWith(".")) return createSymbol(tokenValue, position);
   if (tokenValue.includes(".") && !tokenValue.startsWith(".") && !tokenValue.endsWith("."))
-    return parseDotNotation(tokenValue);
-  return createSymbol(tokenValue);
+    return parseDotNotation(tokenValue, position);
+  return createSymbol(tokenValue, position);
 }
 
 /**
  * Parse a dot notation expression (object.method)
  */
-function parseDotNotation(tokenValue: string): SExp {
+function parseDotNotation(tokenValue: string, position: SourcePosition): SExp {
   const parts = tokenValue.split(".");
   const objectName = parts[0];
   const propertyPath = parts.slice(1).join(".");
   return propertyPath.includes("-")
-    ? createList(createSymbol("get"), createSymbol(objectName), createLiteral(propertyPath))
-    : createSymbol(tokenValue);
+    ? createList(createSymbol("get", position), createSymbol(objectName, position), createLiteral(propertyPath))
+    : createSymbol(tokenValue, position);
 }
 
 /**

@@ -1,5 +1,7 @@
 // src/s-exp/types.ts - S-expression type definitions
 
+import { SourcePosition } from '../parser';
+
 /**
  * Core S-expression types representing the fundamental HQL building blocks
  */
@@ -8,6 +10,7 @@ export type SExp = SSymbol | SList | SLiteral | SString | SNumber | SBoolean | S
 export interface SSymbol {
   type: "symbol";
   name: string;
+  position?: SourcePosition;
 }
 
 export interface SList {
@@ -43,8 +46,8 @@ export interface SNil {
 /**
  * Helper functions to create S-expressions
  */
-export function createSymbol(name: string): SSymbol {
-  return { type: "symbol", name };
+export function createSymbol(name: string, position?: SourcePosition): SSymbol {
+  return { type: "symbol", name, position };
 }
 
 export function createList(...elements: SExp[]): SList {
