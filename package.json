@@ -2,7 +2,8 @@
   "scripts": {
     "watch": "cd hql && tsc -watch -p ./",
     "test:parser": "cd hql && npx ts-node src/test/parser-test.ts",
-    "test:lsp": "cd hql && npx ts-node src/test/lsp-test.ts"
+    "test:lsp": "cd hql && npx ts-node src/test/lsp-test.ts",
+    "test:diagnostics": "cd hql && npx ts-node src/test/diagnosticsTest.ts"
   },
   "devDependencies": {
     "@types/vscode": "^1.97.0",
