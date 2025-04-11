@@ -13,7 +13,7 @@ import {
 } from 'vscode-languageserver';
 import * as path from 'path';
 import * as fs from 'fs';
-import { parse, SExp } from '../../parser';
+import { parse, SExp, SList, SSymbol } from '../../parser';
 import { isList, isSymbol, isString } from '../../s-exp/types';
 import { SymbolManager, ExtendedSymbolInformation } from '../symbolManager';
 
@@ -99,7 +99,75 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
         const text = document.getText();
         const expressions = parse(text, true);
         
-        // Look for exportable definitions (fn, fx, let, var, enum, etc.)
+        // Track imported symbols with their details
+        const importedSymbols: Map<string, { source: string, kind: CompletionItemKind }> = new Map();
+        
+        // First pass: Collect all imported symbols
+        for (const expr of expressions) {
+            if (isList(expr) && expr.elements.length > 1 && isSymbol(expr.elements[0])) {
+                const keyword = expr.elements[0].name;
+                
+                // Check for import statements
+                if (keyword === 'import' && expr.elements.length >= 4) {
+                    const secondElement = expr.elements[1];
+                    
+                    // Find 'from' keyword position
+                    let fromIndex = -1;
+                    for (let i = 2; i < expr.elements.length; i++) {
+                        if (isSymbol(expr.elements[i]) && (expr.elements[i] as SSymbol).name === 'from') {
+                            fromIndex = i;
+                            break;
+                        }
+                    }
+                    
+                    if (fromIndex !== -1 && fromIndex + 1 < expr.elements.length && isString(expr.elements[fromIndex + 1])) {
+                        const modulePath = (expr.elements[fromIndex + 1] as { value: string }).value;
+                        
+                        // Vector import: (import [sym1, sym2] from "path")
+                        if (isList(secondElement)) {
+                            const importList = secondElement as SList;
+                            
+                            // Process each symbol in the import list
+                            for (const element of importList.elements) {
+                                if (isSymbol(element)) {
+                                    // Simple import: symbol
+                                    importedSymbols.set(element.name, { 
+                                        source: modulePath, 
+                                        kind: CompletionItemKind.Variable 
+                                    });
+                                } else if (isList(element)) {
+                                    // Handle 'as' syntax: original as alias
+                                    const asList = element as SList;
+                                    if (asList.elements.length > 2 && 
+                                        isSymbol(asList.elements[0]) && 
+                                        isSymbol(asList.elements[1]) && 
+                                        (asList.elements[1] as SSymbol).name === 'as' && 
+                                        isSymbol(asList.elements[2])) {
+                                        
+                                        const originalName = (asList.elements[0] as SSymbol).name;
+                                        const aliasName = (asList.elements[2] as SSymbol).name;
+                                        
+                                        importedSymbols.set(aliasName, { 
+                                            source: modulePath, 
+                                            kind: CompletionItemKind.Variable
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        // Namespace import: (import namespace from "path")
+                        else if (isSymbol(secondElement)) {
+                            importedSymbols.set((secondElement as SSymbol).name, { 
+                                source: modulePath, 
+                                kind: CompletionItemKind.Module  // Using Module instead of Namespace
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Second pass: Collect exportable definitions (fn, fx, let, var, enum, etc.)
         for (const expr of expressions) {
             if (isList(expr) && expr.elements.length > 1 && isSymbol(expr.elements[0])) {
                 const keyword = expr.elements[0].name;
@@ -143,6 +211,25 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
                     }
                 }
             }
+        }
+        
+        // Add imported symbols to the exportable list
+        for (const [symbolName, details] of importedSymbols.entries()) {
+            exportableSymbols.push({
+                label: symbolName,
+                kind: details.kind,
+                detail: `Imported from ${details.source}`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: `Re-export the imported symbol \`${symbolName}\``
+                },
+                insertText: symbolName,
+                sortText: `7-imported-${symbolName}`,
+                data: {
+                    imported: true,
+                    sourceModule: details.source
+                }
+            });
         }
     } catch (error) {
         console.error(`Error getting exportable symbols: ${error}`);
@@ -1024,4 +1111,14 @@ function extractJavaScriptExports(jsText: string): string[] {
     }
     
     return exports;
+}
+
+/**
+ * Extract filename from a path (without extension)
+ */
+function extractFilename(path: string): string {
+    const parts = path.split('/');
+    const filenameWithExtension = parts[parts.length - 1];
+    const filenameWithoutExtension = filenameWithExtension.split('.')[0];
+    return filenameWithoutExtension;
 }

@@ -18,6 +18,12 @@ import {
   getClassInstantiationCompletions,
   getClassNameCompletions
 } from "./autocompletion/class"
+import {
+  getClassDeclarationCompletions,
+  getClassInstantiationSnippets,
+  getClassMethodCompletions,
+  getMethodCallCompletions
+} from "./autocompletion/class-extended"
 import { handleImportCompletions, handleExportCompletions, getRelativePathCompletionItems } from "./autocompletion/import-export"
 import { 
   getFunctionSpecificCompletions, 
@@ -29,12 +35,31 @@ import {
   handleSpecialSyntaxCompletions, 
   getDataStructureLiteralCompletions, 
   getCondPatternCompletions, 
-  getForLoopCompletions, 
-  getLoopRecurCompletions,
+  getLoopBindingCompletions,
   getTypeCompletions,
   getTemplateCompletions,
-  handleMethodChainCompletions
+  handleMethodChainCompletions,
+  getCompletionKindForSymbol
 } from "./autocompletion/core"
+import {
+  getBlockCompletions,
+  getBranchingCompletions
+} from "./autocompletion/control"
+import {
+  getMacroCompletions,
+  getMacroUsageCompletions
+} from "./autocompletion/macro"
+import {
+  getRepeatCompletions,
+  getForLoopCompletions,
+  getWhileLoopCompletions,
+  getCondCompletions,
+  getWhenUnlessCompletions,
+  getLoopRecurCompletions,
+  getLetBindingControlCompletions,
+  getClassCompletions,
+  getCoreMacroCompletions
+} from "./autocompletion/controlflow"
 import { 
   getAllEnumCaseCompletions, 
   processEnumForCompletion, 
@@ -541,10 +566,179 @@ export class CompletionProvider {
         }
       }
       
-      // Remove duplicates and sort by match type
-      return this.mergeAndDeduplicate(completions, word);
+      // After handling all special cases, attempt to provide completions based on the current word
+      const currentWord = this.getWordAtPosition(linePrefix);
+      console.log(`[HQL Completion] Current word: "${currentWord}"`);
+      
+      // Always provide document symbols (functions, variables) as completion options
+      const documentItems = getDocumentSymbolCompletions(document, position, currentWord, this.symbolManager);
+      
+      // Check if we're after a left parenthesis, which suggests the start of an expression
+      if (linePrefix.trim().endsWith('(')) {
+        const symbolItems = this.symbolManager.getDocumentSymbols(document.uri)
+          .filter(s => s.name.startsWith(currentWord))
+          .map(s => {
+            return {
+              label: s.name,
+              kind: getCompletionKindForSymbol(s.kind),
+              detail: s.name,
+              documentation: {
+                kind: MarkupKind.PlainText, 
+                value: s.data?.documentation || s.name
+              }
+            } as CompletionItem;
+          });
+          
+        // Combine with standard library items and template completions
+        let completions = [...symbolItems];
+        
+        // Add standard library and template completions
+        const stdlibItems = getStdLibCompletions(currentWord);
+        completions = [...completions, ...stdlibItems];
+        
+        // Add control flow completions
+        completions = [...completions, ...getWhenUnlessCompletions()];
+        completions = [...completions, ...getCondCompletions()];
+        completions = [...completions, ...getWhileLoopCompletions()];
+        completions = [...completions, ...getForLoopCompletions()];
+        completions = [...completions, ...getLoopRecurCompletions()];
+        completions = [...completions, ...getRepeatCompletions()];
+        completions = [...completions, ...getLetBindingControlCompletions()];
+        completions = [...completions, ...getBlockCompletions()];
+        completions = [...completions, ...getBranchingCompletions()];
+        
+        // Add macro usage completions
+        completions = [...completions, ...getMacroUsageCompletions()];
+        
+        // Add class related completions
+        completions = [...completions, ...getClassDeclarationCompletions()];
+        completions = [...completions, ...getClassInstantiationSnippets()];
+        
+        return this.mergeAndDeduplicate(completions, currentWord);
+      }
+      
+      // Check for word-based completions (outside of expression starts)
+      if (currentWord && !linePrefix.trimEnd().endsWith('(')) {
+        console.log(`[HQL Completion] Providing word-based completions for: ${currentWord}`);
+        
+        // Get template-based completions
+        const templateItems = getTemplateCompletions(currentWord);
+        
+        // Get type completions
+        const typeItems = getTypeCompletions(currentWord);
+        
+        // Get standard library completions
+        const stdlibItems = getStdLibCompletions(currentWord);
+        
+        // Get control flow items (when appropriate based on context)
+        let controlItems: CompletionItem[] = [];
+        let macroItems: CompletionItem[] = [];
+        let classItems: CompletionItem[] = [];
+        
+        // Add relevant completions based on the current word
+        if ('if'.includes(currentWord) || 'when'.includes(currentWord) || 
+            'unless'.includes(currentWord) || 'cond'.includes(currentWord)) {
+          controlItems = getWhenUnlessCompletions();
+        }
+        
+        if ('loop'.includes(currentWord) || 'for'.includes(currentWord) || 
+            'while'.includes(currentWord) || 'recur'.includes(currentWord)) {
+          controlItems = [...controlItems, ...getWhileLoopCompletions()];
+          controlItems = [...controlItems, ...getForLoopCompletions()];
+          controlItems = [...controlItems, ...getLoopRecurCompletions()];
+          controlItems = [...controlItems, ...getRepeatCompletions()];
+        }
+        
+        if ('do'.includes(currentWord) || 'let'.includes(currentWord)) {
+          controlItems = [...controlItems, ...getBlockCompletions()];
+        }
+        
+        if ('try'.includes(currentWord) || 'catch'.includes(currentWord) || 
+            'throw'.includes(currentWord) || 'case'.includes(currentWord)) {
+          controlItems = [...controlItems, ...getBranchingCompletions()];
+        }
+        
+        // Add macro completions if we're potentially writing a macro
+        if ('defmacro'.includes(currentWord) || 'macro'.includes(currentWord)) {
+          macroItems = getMacroCompletions();
+        }
+        
+        // If standard core macros are being typed (or, and, not, etc.)
+        if ('or'.includes(currentWord) || 'and'.includes(currentWord) || 
+            'not'.includes(currentWord) || 'inc'.includes(currentWord) ||
+            'dec'.includes(currentWord) || 'str'.includes(currentWord) ||
+            'empty'.includes(currentWord) || 'contains'.includes(currentWord) ||
+            'first'.includes(currentWord) || 'rest'.includes(currentWord) ||
+            'nil'.includes(currentWord) || 'length'.includes(currentWord)) {
+          macroItems = [...macroItems, ...getMacroUsageCompletions()];
+        }
+        
+        // Add class related completions
+        if ('class'.includes(currentWord) || 'struct'.includes(currentWord)) {
+          classItems = getClassDeclarationCompletions();
+        }
+        
+        if ('new'.includes(currentWord)) {
+          classItems = [...classItems, ...getClassInstantiationSnippets()];
+        }
+        
+        if ('constructor'.includes(currentWord) || 'init'.includes(currentWord) ||
+            'method'.includes(currentWord) || 'fn'.includes(currentWord) ||
+            'fx'.includes(currentWord) || 'static'.includes(currentWord) ||
+            'get'.includes(currentWord) || 'set'.includes(currentWord)) {
+          classItems = [...classItems, ...getClassMethodCompletions()];
+        }
+        
+        if ('call'.includes(currentWord) || 'method'.includes(currentWord) ||
+            'field'.includes(currentWord) || 'chain'.includes(currentWord)) {
+          classItems = [...classItems, ...getMethodCallCompletions()];
+        }
+        
+        // Combine all completions
+        let completions = [...documentItems, ...templateItems, ...typeItems, ...stdlibItems, 
+                          ...controlItems, ...macroItems, ...classItems];
+                          
+        return this.mergeAndDeduplicate(completions, currentWord);
+      }
+      
+      // Add cases for the HQL control structures
+      if (linePrefix.match(/\(\s*repeat\s*$/i)) {
+        return getRepeatCompletions();
+      }
+      
+      if (linePrefix.match(/\(\s*for\s*\(\s*[a-zA-Z0-9_]*\s*$/i)) {
+        return getForLoopCompletions();
+      }
+
+      if (linePrefix.match(/\(\s*while\s*$/i)) {
+        return getWhileLoopCompletions();
+      }
+
+      if (linePrefix.match(/\(\s*cond\s*$/i)) {
+        return getCondCompletions();
+      }
+
+      if (linePrefix.match(/\(\s*(when|unless)\s*$/i)) {
+        return getWhenUnlessCompletions();
+      }
+
+      if (linePrefix.match(/\(\s*loop\s*\(\s*$/i)) {
+        return getLoopRecurCompletions();
+      }
+
+      if (linePrefix.match(/\(\s*(if-let|when-let)\s*$/i)) {
+        return getLetBindingControlCompletions();
+      }
+
+      if (linePrefix.match(/\(\s*class\s*$/i)) {
+        return getClassCompletions();
+      }
+      
+      // Return empty array if nothing else matched
+      return [];
+      
     } catch (error) {
-      console.error(`Error providing completions: ${error}`);
+      console.error('[HQL Completion] Error providing completions:', error);
       return [];
     }
   }
@@ -553,9 +747,11 @@ export class CompletionProvider {
    * Extract the current word from text up to the cursor position
    */
   private getWordAtPosition(linePrefix: string): string {
-    // Match word characters at the end of the line
-    const match = linePrefix.match(/[\w\-_]+$/);
-    return match ? match[0] : '';
+    const wordMatch = linePrefix.match(/[a-zA-Z0-9_-]*$/);
+    if (wordMatch) {
+      return wordMatch[0];
+    }
+    return '';
   }
   
   /**
