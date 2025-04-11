@@ -441,9 +441,10 @@ export class CompletionProvider {
       }
       
       // Check for export completions
-      if (currentLine.includes('export') && (
-          linePrefix.includes('export') || 
-          linePrefix.includes('['))) {
+      const exportPattern = /\(\s*export\s+\[/;
+      const isExportContext = currentLine.match(exportPattern) !== null;
+      if (isExportContext) {
+        console.log('[HQL] Detected export context');
         return handleExportCompletions(document, linePrefix, fullText);
       }
       
@@ -480,24 +481,24 @@ export class CompletionProvider {
       const isImportContext = currentLine.match(importPattern) !== null;
       console.log(`[HQL] Line: "${currentLine}" | Import context: ${isImportContext}`);
       
-      // Check for data structure literal completions (but not in import contexts)
-      if (linePrefix.trim().endsWith('[') && !isImportContext) {
-        console.log('[HQL] Detected vector start: [ - Not in import context, providing completions');
+      // Check for data structure literal completions (but not in import or export contexts)
+      if (linePrefix.trim().endsWith('[') && !isImportContext && !isExportContext) {
+        console.log('[HQL] Detected vector start: [ - Not in import/export context, providing completions');
         return getDataStructureLiteralCompletions('[');
-      } else if (linePrefix.trim().endsWith('[') && isImportContext) {
-        console.log('[HQL] Detected vector start: [ - In import context, suppressing completions');
-        // Return empty array to prevent data structure completions in import context
+      } else if (linePrefix.trim().endsWith('[') && (isImportContext || isExportContext)) {
+        console.log('[HQL] Detected vector start: [ - In import/export context, suppressing completions');
+        // Return empty array to prevent data structure completions in import/export context
         return [];
-      } else if (linePrefix.trim().endsWith('{') && !isImportContext) {
+      } else if (linePrefix.trim().endsWith('{') && !isImportContext && !isExportContext) {
         console.log('Detected map start: {');
         return getDataStructureLiteralCompletions('{');
-      } else if (linePrefix.trim().endsWith('#[') && !isImportContext) {
+      } else if (linePrefix.trim().endsWith('#[') && !isImportContext && !isExportContext) {
         console.log('Detected set start: #[');
         return getDataStructureLiteralCompletions('#[');
-      } else if (linePrefix.trim().endsWith('#') && !isImportContext) {
+      } else if (linePrefix.trim().endsWith('#') && !isImportContext && !isExportContext) {
         console.log('Detected set start shorthand: #');
         return getDataStructureLiteralCompletions('#[');
-      } else if (linePrefix.trim().endsWith("'") && !isImportContext) {
+      } else if (linePrefix.trim().endsWith("'") && !isImportContext && !isExportContext) {
         console.log('Detected list start: \'');
         return getDataStructureLiteralCompletions("'");
       }

@@ -17,6 +17,8 @@ import { parse, SExp, SList, SSymbol } from '../../parser';
 import { isList, isSymbol, isString } from '../../s-exp/types';
 import { SymbolManager, ExtendedSymbolInformation } from '../symbolManager';
 
+// List of reserved keywords that cannot be used as symbol names
+const RESERVED_KEYWORDS = ['vector'];
 
 /**
 * Handle completions for export statements
@@ -37,6 +39,18 @@ export function handleExportCompletions(
     const exportSymbolMatch = currentLine.match(/export\s+\[\s*([a-zA-Z_][a-zA-Z0-9_]*)$/);
     if (exportSymbolMatch) {
         const partialSymbol = exportSymbolMatch[1];
+        // If user is typing a reserved keyword, show error message
+        if (RESERVED_KEYWORDS.some(kw => kw.startsWith(partialSymbol.toLowerCase()))) {
+            return [{
+                label: `/* '${partialSymbol}' is a reserved keyword */`,
+                kind: CompletionItemKind.Text,
+                detail: 'Cannot use reserved keywords as symbol names',
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: 'This is a reserved keyword in HQL and cannot be used as a symbol name.'
+                }
+            }];
+        }
         return getExportableSymbols(document).filter(item => 
             item.label.toLowerCase().startsWith(partialSymbol.toLowerCase())
         );
@@ -46,6 +60,19 @@ export function handleExportCompletions(
     const exportContinueMatch = currentLine.match(/export\s+\[.+,\s*([a-zA-Z_][a-zA-Z0-9_]*)$/);
     if (exportContinueMatch) {
         const partialSymbol = exportContinueMatch[1];
+        
+        // If user is typing a reserved keyword, show error message
+        if (RESERVED_KEYWORDS.some(kw => kw.startsWith(partialSymbol.toLowerCase()))) {
+            return [{
+                label: `/* '${partialSymbol}' is a reserved keyword */`,
+                kind: CompletionItemKind.Text,
+                detail: 'Cannot use reserved keywords as symbol names',
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: 'This is a reserved keyword in HQL and cannot be used as a symbol name.'
+                }
+            }];
+        }
         
         // Find symbols that are already in the export list
         const alreadyExported = currentLine.match(/export\s+\[(.*)\s*,\s*[^,\s]*$/)?.[1].split(',')
@@ -130,8 +157,16 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
                             // Process each symbol in the import list
                             for (const element of importList.elements) {
                                 if (isSymbol(element)) {
+                                    // Skip reserved keywords in imports
+                                    const symbolName = element.name;
+                                    if (RESERVED_KEYWORDS.includes(symbolName.toLowerCase())) {
+                                        console.log(`[Import] Skipping reserved keyword: ${symbolName}`);
+                                        continue;
+                                    }
+                                    
                                     // Simple import: symbol
-                                    importedSymbols.set(element.name, { 
+                                    console.log(`[Import] Found symbol: ${symbolName} from ${modulePath}`);
+                                    importedSymbols.set(symbolName, { 
                                         source: modulePath, 
                                         kind: CompletionItemKind.Variable 
                                     });
@@ -147,6 +182,14 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
                                         const originalName = (asList.elements[0] as SSymbol).name;
                                         const aliasName = (asList.elements[2] as SSymbol).name;
                                         
+                                        // Skip if either name is a reserved keyword
+                                        if (RESERVED_KEYWORDS.includes(originalName.toLowerCase()) || 
+                                            RESERVED_KEYWORDS.includes(aliasName.toLowerCase())) {
+                                            console.log(`[Import] Skipping reserved keyword in alias: ${originalName} as ${aliasName}`);
+                                            continue;
+                                        }
+                                        
+                                        console.log(`[Import] Found alias: ${aliasName} (${originalName}) from ${modulePath}`);
                                         importedSymbols.set(aliasName, { 
                                             source: modulePath, 
                                             kind: CompletionItemKind.Variable
@@ -157,9 +200,17 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
                         }
                         // Namespace import: (import namespace from "path")
                         else if (isSymbol(secondElement)) {
-                            importedSymbols.set((secondElement as SSymbol).name, { 
+                            const namespaceName = (secondElement as SSymbol).name;
+                            // Skip if namespace name is a reserved keyword
+                            if (RESERVED_KEYWORDS.includes(namespaceName.toLowerCase())) {
+                                console.log(`[Import] Skipping reserved keyword as namespace: ${namespaceName}`);
+                                continue;
+                            }
+                            
+                            console.log(`[Import] Found namespace: ${namespaceName} from ${modulePath}`);
+                            importedSymbols.set(namespaceName, { 
                                 source: modulePath, 
-                                kind: CompletionItemKind.Module  // Using Module instead of Namespace
+                                kind: CompletionItemKind.Module
                             });
                         }
                     }
@@ -176,6 +227,13 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
                 if (['fn', 'fx', 'let', 'var', 'enum', 'class', 'struct', 'macro'].includes(keyword)) {
                     if (isSymbol(expr.elements[1])) {
                         const symbolName = expr.elements[1].name;
+                        
+                        // Skip if symbol name is a reserved keyword
+                        if (RESERVED_KEYWORDS.includes(symbolName.toLowerCase())) {
+                            console.log(`[Export] Skipping reserved keyword in definition: ${symbolName}`);
+                            continue;
+                        }
+                        
                         let kind: CompletionItemKind = CompletionItemKind.Variable;
                         
                         // Determine completion item kind based on the symbol type
@@ -196,7 +254,7 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
                             break;
                         }
                         
-                        // Add the completion item for the exportable symbol
+                        console.log(`[Export] Found exportable symbol: ${symbolName} (${keyword})`);
                         exportableSymbols.push({
                             label: symbolName,
                             kind,
@@ -215,6 +273,13 @@ export function getExportableSymbols(document: TextDocument): CompletionItem[] {
         
         // Add imported symbols to the exportable list
         for (const [symbolName, details] of importedSymbols.entries()) {
+            // Skip reserved keywords
+            if (RESERVED_KEYWORDS.includes(symbolName.toLowerCase())) {
+                console.log(`[Export] Skipping reserved keyword from imports: ${symbolName}`);
+                continue;
+            }
+            
+            console.log(`[Export] Adding imported symbol to exports: ${symbolName} from ${details.source}`);
             exportableSymbols.push({
                 label: symbolName,
                 kind: details.kind,
@@ -990,11 +1055,9 @@ export function extractExportedSymbols(moduleText: string, moduleFilePath: strin
             if (expr.elements.length > 1 && isList(expr.elements[1])) {
               const exportList = expr.elements[1];
               for (const elem of exportList.elements) {
-                console.log("elem: ", elem);
                 if (isSymbol(elem)) {
                   rawSymbols.push(elem.name);
                 } else if (isList(elem)) {
-                  // Handle possible aliasing: (export [[original as alias], ...])
                   if (
                     elem.elements.length > 2 &&
                     isSymbol(elem.elements[0]) &&
@@ -1054,7 +1117,7 @@ export function extractExportedSymbols(moduleText: string, moduleFilePath: strin
         }
       }
     }
-    
+
     return uniqueSymbols;
   }
   
