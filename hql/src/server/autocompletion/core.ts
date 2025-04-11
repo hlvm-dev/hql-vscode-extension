@@ -585,6 +585,92 @@ import {
           });
         }
         
+        if ('class'.startsWith(word)) {
+          completions.push({
+            label: 'class',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Class definition',
+            insertText: '(class ${1:ClassName}\n  ;; Class fields\n  (var ${2:fieldName})\n\n  ;; Constructor\n  (constructor (${3:params})\n    (do\n      (set! this.${2:fieldName} ${2:fieldName})))\n      \n  ;; Method\n  (fn ${4:methodName} (${5:params})\n    ${0:body}))',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-class',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a class with fields, constructor, and methods'
+            }
+          });
+          
+          completions.push({
+            label: 'class-with-fx',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Class with pure method',
+            insertText: '(class ${1:ClassName}\n  ;; Class fields\n  (var ${2:fieldName})\n\n  ;; Constructor\n  (constructor (${3:params})\n    (do\n      (set! this.${2:fieldName} ${2:fieldName})))\n      \n  ;; Pure method\n  (fx ${4:methodName} (${5:param}: ${6:Type}) (-> ${7:ReturnType})\n    ${0:body}))',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-class-with-fx',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a class with fields, constructor, and a pure method'
+            }
+          });
+        }
+        
+        if ('struct'.startsWith(word)) {
+          completions.push({
+            label: 'struct',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Struct definition',
+            insertText: '(struct ${1:StructName}\n  ;; Struct fields\n  (var ${2:fieldName})\n\n  ;; Initializer\n  (init (${3:params})\n    (do\n      (set! self.${2:fieldName} ${2:fieldName})\n      self))\n      \n  ;; Method\n  (fn ${4:methodName} (${5:params})\n    ${0:body}))',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-struct',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a struct with fields, initializer, and methods'
+            }
+          });
+          
+          completions.push({
+            label: 'struct-with-fx',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Struct with pure method',
+            insertText: '(struct ${1:StructName}\n  ;; Struct fields\n  (var ${2:fieldName})\n\n  ;; Initializer\n  (init (${3:params})\n    (do\n      (set! self.${2:fieldName} ${2:fieldName})\n      self))\n      \n  ;; Pure method\n  (fx ${4:methodName} (${5:param}: ${6:Type}) (-> ${7:ReturnType})\n    ${0:body}))',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-struct-with-fx',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a struct with fields, initializer, and a pure method'
+            }
+          });
+        }
+        
+        if ('new'.startsWith(word)) {
+          // Generic class instantiation template
+          completions.push({
+            label: 'new-class',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Instantiate a class',
+            insertText: '(new ${1:ClassName} ${0:args})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-new-class',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Create a new instance of a class'
+            }
+          });
+          
+          // Class instantiation with let binding and method call
+          completions.push({
+            label: 'new-class-with-methods',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Instantiate a class and call methods',
+            insertText: '(let ${1:instance} (new ${2:ClassName} ${3:args}))\n\n;; Call method on instance\n(${1:instance}.${4:methodName} ${0:args})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-new-class-usage',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Create a new instance of a class, bind it to a variable, and call methods on it'
+            }
+          });
+        }
+        
         if ('cond'.startsWith(word)) {
           completions.push({
             label: 'cond-expr',
@@ -841,6 +927,7 @@ import {
         if (!dotMatch) return [];
         
         const objectName = dotMatch[1];
+        console.log(`[HQL Completion] Method chain for object: ${objectName}`);
         
         // First check if this is a JavaScript built-in object
         const jsObjectCompletions = getJavaScriptObjectCompletions(objectName);
@@ -863,6 +950,37 @@ import {
           } else if (varSymbol.data.type === 'String') {
             return getJavaScriptObjectCompletions('String');
           }
+          
+          // Check if the variable is an instance of a class
+          const classType = varSymbol.data.type;
+          const classSymbol = symbols.find(s => 
+            (s.kind === 5) && // Class
+            s.name === classType
+          );
+          
+          if (classSymbol) {
+            console.log(`[HQL Completion] Variable ${objectName} is an instance of class ${classType}`);
+            // Find all methods of this class
+            const classMethods = symbols.filter(s => 
+              s.kind === 6 && // Method
+              s.data && s.data.parentClass === classType
+            );
+            
+            return classMethods.map(method => {
+              return {
+                label: method.name,
+                kind: CompletionItemKind.Method,
+                detail: `Method of ${classType}`,
+                insertText: method.name,
+                insertTextFormat: InsertTextFormat.PlainText,
+                sortText: `01-${method.name}`,
+                documentation: {
+                  kind: MarkupKind.Markdown,
+                  value: method.data?.documentation || `Call the ${method.name} method`
+                }
+              };
+            });
+          }
         }
         
         // Check if this might be a class instance
@@ -877,22 +995,68 @@ import {
           // Find all methods belonging to this class
           const classMethods = symbols.filter(s => 
             s.kind === 6 && // Method
-            s.name.startsWith(`${className}.`)
+            ((s.name.startsWith(`${className}.`) && s.name.split('.').length === 2) || 
+             (s.data && s.data.parentClass === className))
           );
           
           if (classMethods.length > 0) {
+            console.log(`[HQL Completion] Found ${classMethods.length} methods for class ${className}`);
             return classMethods.map(method => {
-              const methodName = method.name.split('.')[1];
-              const fullMethodName = method.name; // className.methodName
-              
+              // Extract method name without class prefix if present
+              const methodName = method.name.includes('.') ? 
+                method.name.split('.')[1] : method.name;
+                
               return {
                 label: methodName,
                 kind: CompletionItemKind.Method,
                 detail: `Method of ${className}`,
                 insertText: methodName,
                 insertTextFormat: InsertTextFormat.PlainText,
-                sortText: `10-${methodName}`,
-                data: method.data
+                sortText: `01-${methodName}`,
+                documentation: {
+                  kind: MarkupKind.Markdown,
+                  value: method.data?.documentation || `Call the ${methodName} method`
+                }
+              };
+            });
+          }
+        }
+        
+        // Look for instance variables with dot notation
+        const instanceVar = symbols.find(s => 
+          s.kind === 13 && // Variable 
+          s.name === objectName && 
+          (s.data?.type || false) // Check if it has a type that might be a class
+        );
+        
+        if (instanceVar && instanceVar.data?.type) {
+          const className = instanceVar.data.type;
+          console.log(`[HQL Completion] Found instance variable of type ${className}`);
+          
+          // Find class methods
+          const classMethods = symbols.filter(s => 
+            s.kind === 6 && // Method
+            ((s.data && s.data.parentClass === className) || 
+             s.name.startsWith(`${className}.`))
+          );
+          
+          if (classMethods.length > 0) {
+            return classMethods.map(method => {
+              // Extract method name without class prefix if present
+              const methodName = method.name.includes('.') ? 
+                method.name.split('.')[1] : method.name;
+                
+              return {
+                label: methodName,
+                kind: CompletionItemKind.Method,
+                detail: `Method of ${className}`,
+                insertText: methodName,
+                insertTextFormat: InsertTextFormat.PlainText,
+                sortText: `01-${methodName}`,
+                documentation: {
+                  kind: MarkupKind.Markdown,
+                  value: method.data?.documentation || `Call the ${methodName} method`
+                }
               };
             });
           }

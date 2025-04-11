@@ -187,7 +187,7 @@
       {
         "command": "hql.cancelEvaluations",
         "key": "escape",
-        "when": "editorLangId == hql && editorTextFocus && !suggestWidgetVisible && !inlineSuggestionVisible"
+        "when": "editorLangId == hql && editorTextFocus && !suggestWidgetVisible && !inlineSuggestionVisible && !editorHasMultipleSelections"
       },
       {
         "command": "hideSuggestWidget",
