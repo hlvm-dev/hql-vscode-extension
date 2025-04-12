@@ -46,77 +46,77 @@ export function getForLoopCompletions(): CompletionItem[] {
       label: 'for-simple',
       kind: CompletionItemKind.Snippet,
       detail: 'Simple for loop with count',
-      insertText: '(for (${1:i} ${2:count})\n  ${3:body})',
+      insertText: '(for (${1:i} ${2:5})\n  ${3:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Iterates from 0 to count-1.\n\n```lisp\n(for (i 3)\n  (print "Loop 1:" i))\n```'
+        value: 'Iterates from 0 to count-1.\n\n```lisp\n(for (i 5)\n  (print i))\n```'
       }
     },
     {
       label: 'for-range',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with start and end',
-      insertText: '(for (${1:i} ${2:start} ${3:end})\n  ${4:body})',
+      insertText: '(for (${1:i} ${2:1} ${3:10})\n  ${4:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Iterates from start to end-1.\n\n```lisp\n(for (i 5 8)\n  (print "Loop 2:" i))\n```'
+        value: 'Iterates from start to end-1.\n\n```lisp\n(for (i 1 10)\n  (print i))\n```'
       }
     },
     {
       label: 'for-range-step',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with start, end, and step',
-      insertText: '(for (${1:i} ${2:start} ${3:end} ${4:step})\n  ${5:body})',
+      insertText: '(for (${1:i} ${2:0} ${3:10} ${4:2})\n  ${5:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Iterates from start to end-1 with custom step size.\n\n```lisp\n(for (i 0 10 2)\n  (print "Loop 3:" i))\n```'
+        value: 'Iterates from start to end-1 with custom step size.\n\n```lisp\n(for (i 0 10 2)\n  (print i))\n```'
       }
     },
     {
       label: 'for-named-to',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with named "to" parameter',
-      insertText: '(for (${1:i} to: ${2:end})\n  ${3:body})',
+      insertText: '(for (${1:i} to: ${2:10})\n  ${3:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Named parameter style: iterates from 0 to end-1.\n\n```lisp\n(for (i to: 3)\n  (print "Named loop 1:" i))\n```'
+        value: 'Named parameter style: iterates from 0 to end-1.\n\n```lisp\n(for (i to: 10)\n  (print i))\n```'
       }
     },
     {
       label: 'for-named-from-to',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with named "from" and "to" parameters',
-      insertText: '(for (${1:i} from: ${2:start} to: ${3:end})\n  ${4:body})',
+      insertText: '(for (${1:i} from: ${2:1} to: ${3:10})\n  ${4:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Named parameter style: iterates from start to end-1.\n\n```lisp\n(for (i from: 5 to: 8)\n  (print "Named loop 2:" i))\n```'
+        value: 'Named parameter style: iterates from start to end-1.\n\n```lisp\n(for (i from: 1 to: 10)\n  (print i))\n```'
       }
     },
     {
       label: 'for-named-full',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with all named parameters',
-      insertText: '(for (${1:i} from: ${2:start} to: ${3:end} by: ${4:step})\n  ${5:body})',
+      insertText: '(for (${1:i} from: ${2:0} to: ${3:10} by: ${4:2})\n  ${5:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Named parameter style: iterates from start to end-1 with custom step size.\n\n```lisp\n(for (i from: 0 to: 10 by: 2)\n  (print "Named loop 3:" i))\n```'
+        value: 'Named parameter style: iterates from start to end-1 with custom step size.\n\n```lisp\n(for (i from: 0 to: 10 by: 2)\n  (print i))\n```'
       }
     },
     {
       label: 'for-named-to-by',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with named "to" and "by" parameters',
-      insertText: '(for (${1:i} to: ${2:end} by: ${3:step})\n  ${4:body})',
+      insertText: '(for (${1:i} to: ${2:10} by: ${3:2})\n  ${4:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
-        value: 'Named parameter style: iterates from 0 to end-1 with custom step size.\n\n```lisp\n(for (i to: 10 by: 3)\n  (print "Named loop 4:" i))\n```'
+        value: 'Named parameter style: iterates from 0 to end-1 with custom step size.\n\n```lisp\n(for (i to: 10 by: 2)\n  (print i))\n```'
       }
     }
   ];

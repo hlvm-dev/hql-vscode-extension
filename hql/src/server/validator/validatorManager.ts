@@ -5,7 +5,7 @@ import {
     Connection
   } from 'vscode-languageserver';
   
-  import { parse, ParseError } from '../../parser';
+  import { parse, ParseError, SExp, SList, SSymbol } from '../../parser';
   import { SymbolManager } from '../symbolManager';
   import { SyntaxValidator } from './syntaxValidator';
   import { TypeValidator } from './typeValidator';
@@ -319,29 +319,196 @@ import {
       symbolOffsets: Map<string, number[]>,
       document: TextDocument
     ): void {
-      const collectSymbolsInExpr = (expr: any) => {
+      // Special keywords that should not be checked as undefined symbols
+      const reservedKeywords = [
+        'from', 'as', 'case', 'class', 'enum', 'export', 'extends',
+        'import', 'implements', 'interface', 'new', 'return', 'super',
+        'this', 'throw', 'typeof', 'void', 'with', 'yield'
+      ];
+      
+      const collectSymbolsInExpr = (expr: any, context: { 
+        isImport: boolean,
+        isEnum: boolean,
+        isParamName: boolean,
+        isNamedParam: boolean,
+        paramNames?: Set<string>  // New: track function parameters
+      } = { 
+        isImport: false, 
+        isEnum: false, 
+        isParamName: false, 
+        isNamedParam: false 
+      }) => {
         if (isSymbol(expr)) {
-          const name = expr.name;
-          if (!name.startsWith(':')) { // Skip keywords
-            usedSymbols.add(name);
+          const name = (expr as SSymbol).name;
+          
+          // Skip certain symbols based on context
+          if (
+            // Skip keyword literals (starting with :)
+            name.startsWith(':') || 
+            // Skip 'from' in imports
+            (context.isImport && name === 'from') ||
+            // Skip reserved keywords
+            reservedKeywords.includes(name) ||
+            // Skip parameters defined in function scope
+            (context.paramNames && context.paramNames.has(name))
+          ) {
+            return;
+          }
+          
+          // Handle named parameters (symbols ending with a colon)
+          if (name.endsWith(':')) {
+            // Remove the colon before checking if it's a valid symbol
+            const paramName = name.substring(0, name.length - 1);
+            // Named parameters are not undefined symbols - they're parameter names
+            // Don't add them to usedSymbols
+            return;
+          }
+          
+          // In enum cases, don't consider the case names as undefined
+          if (context.isEnum) {
+            return;
+          }
+          
+          // Don't flag parameter names as undefined
+          if (context.isParamName) {
+            return;
+          }
+          
+          usedSymbols.add(name);
+          
+          // Record offset if position is available
+          if (expr.position) {
+            const offset = document.offsetAt({
+              line: expr.position.line - 1,
+              character: expr.position.column - 1
+            });
             
-            // Record offset if position is available
-            if (expr.position) {
-              const offset = document.offsetAt({
-                line: expr.position.line - 1,
-                character: expr.position.column - 1
-              });
-              
-              if (!symbolOffsets.has(name)) {
-                symbolOffsets.set(name, []);
-              }
-              symbolOffsets.get(name)?.push(offset);
+            if (!symbolOffsets.has(name)) {
+              symbolOffsets.set(name, []);
             }
+            symbolOffsets.get(name)?.push(offset);
           }
         } else if (isList(expr)) {
-          // Process list elements
+          // Check for special forms
+          if (expr.elements.length > 0 && isSymbol(expr.elements[0])) {
+            const firstSymbol = (expr.elements[0] as SSymbol).name;
+            
+            // Handle import statements
+            if (firstSymbol === 'import') {
+              // Process import statement elements
+              if (expr.elements.length > 1) {
+                // Process the import vector or symbol
+                if (isList(expr.elements[1])) {
+                  // Vector import: (import [symbol1 symbol2] from "...")
+                  collectSymbolsInExpr(expr.elements[1], { ...context, isImport: true });
+                } else if (isSymbol(expr.elements[1])) {
+                  // Default import: (import default from "...")
+                  collectSymbolsInExpr(expr.elements[1], { ...context, isImport: true });
+                }
+                
+                // Skip checking 'from' and the module path
+                for (let i = 2; i < expr.elements.length; i++) {
+                  if (isSymbol(expr.elements[i]) && (expr.elements[i] as SSymbol).name === 'from') {
+                    // Skip 'from' and the next element (the module path)
+                    i++;
+                    continue;
+                  }
+                  collectSymbolsInExpr(expr.elements[i], { ...context, isImport: true });
+                }
+                return; // Skip default processing of elements
+              }
+            }
+            
+            // Handle enum definitions
+            else if (firstSymbol === 'enum' && expr.elements.length > 1) {
+              // Skip the enum name (it's a definition)
+              for (let i = 2; i < expr.elements.length; i++) {
+                const caseExpr = expr.elements[i];
+                if (isList(caseExpr) && 
+                    caseExpr.elements.length > 0 && 
+                    isSymbol(caseExpr.elements[0]) && 
+                    (caseExpr.elements[0] as SSymbol).name === 'case') {
+                  // This is a case definition, skip checking the case name
+                  for (let j = 2; j < caseExpr.elements.length; j++) {
+                    collectSymbolsInExpr(caseExpr.elements[j], context);
+                  }
+                } else {
+                  collectSymbolsInExpr(caseExpr, context);
+                }
+              }
+              return; // Skip default processing of elements
+            }
+            
+            // Handle function definitions
+            else if ((firstSymbol === 'fn' || firstSymbol === 'fx') && 
+                     expr.elements.length > 2 && 
+                     isList(expr.elements[2])) {
+              // Skip the function name (element 1, it's a definition)
+              
+              // Create a list of parameter names to skip in the function body
+              const paramNames = new Set<string>();
+              
+              // Handle parameter list (element 2)
+              const paramList = expr.elements[2];
+              for (const param of paramList.elements) {
+                if (isSymbol(param)) {
+                  // Regular parameter, don't check as undefined
+                  // And add to parameter names to skip in function body
+                  paramNames.add((param as SSymbol).name);
+                  continue;
+                } else if (isList(param)) {
+                  // Typed parameter like (name: Type)
+                  if (param.elements.length >= 1 && isSymbol(param.elements[0])) {
+                    // Add parameter name to list of names to skip
+                    paramNames.add((param.elements[0] as SSymbol).name);
+                    
+                    // Still check the type
+                    for (let i = 1; i < param.elements.length; i++) {
+                      collectSymbolsInExpr(param.elements[i], context);
+                    }
+                  }
+                }
+              }
+              
+              // Process function body with parameter context
+              const functionContext = { 
+                ...context, 
+                // Custom contextual data for function scope
+                paramNames 
+              };
+              
+              for (let i = 3; i < expr.elements.length; i++) {
+                collectSymbolsInExpr(expr.elements[i], functionContext);
+              }
+              return; // Skip default processing of elements
+            }
+            
+            // Handle function calls with named parameters
+            else if (!['let', 'var', 'class', 'struct', 'macro', 'defmacro'].includes(firstSymbol)) {
+              // This might be a function call with named parameters
+              collectSymbolsInExpr(expr.elements[0], context); // Check the function name
+              
+              for (let i = 1; i < expr.elements.length; i++) {
+                const arg = expr.elements[i];
+                
+                if (isSymbol(arg) && (arg as SSymbol).name.endsWith(':')) {
+                  // This is a named parameter, skip checking it
+                  // But check the value in the next element
+                  if (i + 1 < expr.elements.length) {
+                    collectSymbolsInExpr(expr.elements[i + 1], context);
+                    i++; // Skip the value since we've processed it
+                  }
+                } else {
+                  collectSymbolsInExpr(arg, context);
+                }
+              }
+              return; // Skip default processing of elements
+            }
+          }
+          
+          // Process list elements for cases not handled above
           for (const elem of expr.elements) {
-            collectSymbolsInExpr(elem);
+            collectSymbolsInExpr(elem, context);
           }
         }
       };
@@ -383,7 +550,10 @@ import {
         
         // Others
         'throw', 'try', 'catch', 'finally', 'new', 'into', 'this', 'super',
-        'return'
+        'return',
+        
+        // Syntax symbols
+        '->'  // Return type arrow
       ];
     }
     

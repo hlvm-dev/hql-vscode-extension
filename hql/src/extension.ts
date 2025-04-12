@@ -11,7 +11,7 @@ import { config } from "./config-manager";
 import { evaluator } from "./evaluation-manager";
 import { startServer, stopServer, restartServer, isServerRunning } from './server-manager';
 import { Logger } from './logger';
-import { activateParedit } from './paredit';
+import { activateParedit } from './paredit/index';
 
 // Create a logger instance
 const logger = new Logger(true);

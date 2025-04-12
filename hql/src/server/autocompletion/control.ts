@@ -121,7 +121,7 @@ export function getLoopCompletions(): CompletionItem[] {
       label: 'loop-accumulator',
       kind: CompletionItemKind.Snippet,
       detail: 'Loop with accumulator',
-      insertText: '(loop (${1:i} ${2:0} ${3:acc} ${4:0})\n  (if (< ${1:i} ${5:10})\n    (recur (+ ${1:i} 1) (+ ${3:acc} ${1:i}))\n    ${3:acc}))',
+      insertText: '(loop (${1:i} ${2:0} ${3:sum} ${4:0})\n  (if (< ${1:i} ${5:10})\n    (recur (+ ${1:i} 1) (+ ${3:sum} ${1:i}))\n    ${3:sum}))',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
@@ -187,7 +187,7 @@ export function getLoopCompletions(): CompletionItem[] {
       label: 'for-collection',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop over collection',
-      insertText: '(for [${1:item} ${2:collection}]\n  ${3:body})',
+      insertText: '(for [${1:item} ${2:items}]\n  ${3:body})',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,
@@ -198,7 +198,7 @@ export function getLoopCompletions(): CompletionItem[] {
       label: 'for-with-let',
       kind: CompletionItemKind.Snippet,
       detail: 'For loop with let binding',
-      insertText: '(for [${1:i} (range ${2:10})]\n  (let [${3:x} (* ${1:i} 2)]\n    ${4:body}))',
+      insertText: '(for [${1:i} (range ${2:10})]\n  (let [${3:value} (* ${1:i} 2)]\n    ${4:body}))',
       insertTextFormat: InsertTextFormat.Snippet,
       documentation: {
         kind: MarkupKind.Markdown,

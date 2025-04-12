@@ -400,7 +400,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'fn',
                 kind: CompletionItemKind.Keyword,
                 detail: 'Class method',
-                insertText: 'fn ${1:methodName} (${2:params})\n  ${0:body}',
+                insertText: 'fn ${1:calculate} (${2:value})\n  ${0:body}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -411,7 +411,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'fx',
                 kind: CompletionItemKind.Keyword,
                 detail: 'Class pure method',
-                insertText: 'fx ${1:methodName} (${2:param}: ${3:Type}) (-> ${4:ReturnType})\n  ${0:body}',
+                insertText: 'fx ${1:multiply} (${2:x}: ${3:Int}) (-> ${4:Int})\n  ${0:body}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -482,7 +482,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'from:',
                 kind: CompletionItemKind.Property,
                 detail: 'Loop start value',
-                insertText: 'from: ${0:0}',
+                insertText: 'from: ${0:1}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -504,7 +504,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'by:',
                 kind: CompletionItemKind.Property,
                 detail: 'Loop increment',
-                insertText: 'by: ${0:1}',
+                insertText: 'by: ${0:2}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -519,7 +519,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'recur',
                 kind: CompletionItemKind.Keyword,
                 detail: 'Loop recursion',
-                insertText: 'recur ${0:values}',
+                insertText: 'recur (+ i 1) (+ sum i)',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -574,7 +574,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'param-with-type',
                 kind: CompletionItemKind.Snippet,
                 detail: 'Parameter with type annotation',
-                insertText: '${1:name}: ${0:Type}',
+                insertText: '${1:name}: ${0:Int}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -585,7 +585,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'param-with-default',
                 kind: CompletionItemKind.Snippet,
                 detail: 'Parameter with default value',
-                insertText: '${1:name}: ${2:Type} = ${0:defaultValue}',
+                insertText: '${1:name}: ${2:Int} = ${0:10}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -596,7 +596,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'return-type',
                 kind: CompletionItemKind.Snippet,
                 detail: 'Function return type',
-                insertText: '(-> ${0:ReturnType})',
+                insertText: '(-> ${0:Int})',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,
@@ -607,7 +607,7 @@ export function getFunctionSpecificCompletions(functionName: string): Completion
                 label: 'enum-param',
                 kind: CompletionItemKind.Snippet,
                 detail: 'Enum type parameter',
-                insertText: '${1:paramName}: ${0:EnumType}',
+                insertText: '${1:status}: ${0:Status}',
                 insertTextFormat: InsertTextFormat.Snippet,
                 documentation: {
                     kind: MarkupKind.Markdown,

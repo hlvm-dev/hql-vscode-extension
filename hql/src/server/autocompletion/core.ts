@@ -308,25 +308,76 @@ import {
         }
         
         if ('fn'.startsWith(word)) {
-          // Add untyped fn variants
+          completions.push({
+            label: 'fn-function',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Function Definition (fn)',
+            insertText: '(fn ${1:name} (${2:x} ${3:y})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-fn',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a function with untyped parameters'
+            }
+          });
+          
+          completions.push({
+            label: 'fn-defaults',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Function with Default Parameters',
+            insertText: '(fn ${1:name} (${2:x} = ${3:10} ${4:y} = ${5:20})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-fn-defaults',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a function with default parameter values'
+            }
+          });
+          
+          completions.push({
+            label: 'fn-function-typed',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Function Definition with Types (fn)',
+            insertText: '(fn ${1:name} (${2:x}: ${3:Int} ${4:y}: ${5:Int}) (-> ${6:Int})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-fn-typed',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a function with typed parameters and return type'
+            }
+          });
+          
+          completions.push({
+            label: 'fn-typed-defaults',
+            kind: CompletionItemKind.Snippet,
+            detail: 'Typed Function with Default Parameters',
+            insertText: '(fn ${1:name} (${2:x}: ${3:Int} = ${4:10} ${5:y}: ${6:Int} = ${7:20}) (-> ${8:Int})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-fn-defaults',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a typed function with default parameter values'
+            }
+          });
+          
           completions.push({
             label: 'fn-untyped',
             kind: CompletionItemKind.Snippet,
             detail: 'Untyped Function Definition',
-            insertText: '(fn ${1:name} (${2:param1} ${3:param2})\n  ${0:body})',
+            insertText: '(fn ${1:name} (${2:x} ${3:y})\n  ${0:body})',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-fn-untyped',
             documentation: {
               kind: MarkupKind.Markdown,
-              value: 'Creates an untyped function (maximum flexibility)'
+              value: 'Creates a function without type annotations'
             }
           });
-    
+          
           completions.push({
             label: 'fn-untyped-defaults',
             kind: CompletionItemKind.Snippet,
-            detail: 'Untyped Function with Default Values',
-            insertText: '(fn ${1:name} (${2:param1} = ${3:default1} ${4:param2} = ${5:default2})\n  ${0:body})',
+            detail: 'Untyped Function with Default Parameters',
+            insertText: '(fn ${1:name} (${2:x} = ${3:10} ${4:y} = ${5:20})\n  ${0:body})',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-fn-untyped-defaults',
             documentation: {
@@ -339,39 +390,12 @@ import {
             label: 'fn-untyped-rest',
             kind: CompletionItemKind.Snippet,
             detail: 'Untyped Function with Rest Parameters',
-            insertText: '(fn ${1:name} (${2:param1} ${3:param2} & ${4:rest})\n  ${0:body})',
+            insertText: '(fn ${1:sum} (${2:x} ${3:y} & ${4:rest})\n  ${0:body})',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-fn-untyped-rest',
             documentation: {
               kind: MarkupKind.Markdown,
-              value: 'Creates an untyped function with rest parameters'
-            }
-          });
-    
-          // Add or keep the existing typed function templates
-          completions.push({
-            label: 'fn-function',
-            kind: CompletionItemKind.Snippet,
-            detail: 'Function Definition (fn)',
-            insertText: '(fn ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})\n  ${0:body})',
-            insertTextFormat: InsertTextFormat.Snippet,
-            sortText: '01-fn',
-            documentation: {
-              kind: MarkupKind.Markdown,
-              value: 'Creates a fully typed function definition with return type'
-            }
-          });
-          
-          completions.push({
-            label: 'fn-defaults',
-            kind: CompletionItemKind.Snippet,
-            detail: 'Function with Default Parameters',
-            insertText: '(fn ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2} = ${7:defaultValue2}) (-> ${8:ReturnType})\n  ${0:body})',
-            insertTextFormat: InsertTextFormat.Snippet,
-            sortText: '01-fn-defaults',
-            documentation: {
-              kind: MarkupKind.Markdown,
-              value: 'Creates a function with default parameter values'
+              value: 'Creates a function with rest parameters to handle variable arguments'
             }
           });
         }
@@ -381,7 +405,7 @@ import {
             label: 'fx-pure',
             kind: CompletionItemKind.Snippet,
             detail: 'Pure Function Definition (fx)',
-            insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} ${4:param2}: ${5:Type2}) (-> ${6:ReturnType})\n  ${0:body})',
+            insertText: '(fx ${1:name} (${2:x}: ${3:Int} ${4:y}: ${5:Int}) (-> ${6:Int})\n  ${0:body})',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-fx', // Highest priority
             documentation: {
@@ -394,7 +418,7 @@ import {
             label: 'fx-defaults',
             kind: CompletionItemKind.Snippet,
             detail: 'Pure Function with Default Parameters',
-            insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2} = ${7:defaultValue2}) (-> ${8:ReturnType})\n  ${0:body})',
+            insertText: '(fx ${1:name} (${2:x}: ${3:Int} = ${4:10} ${5:y}: ${6:Int} = ${7:20}) (-> ${8:Int})\n  ${0:body})',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-fx-defaults',
             documentation: {
@@ -407,7 +431,7 @@ import {
             label: 'fx-mixed-defaults',
             kind: CompletionItemKind.Snippet,
             detail: 'Pure Function with Mixed Default Parameters',
-            insertText: '(fx ${1:name} (${2:param1}: ${3:Type1} = ${4:defaultValue1} ${5:param2}: ${6:Type2}) (-> ${7:ReturnType})\n  ${0:body})',
+            insertText: '(fx ${1:name} (${2:x}: ${3:Int} = ${4:10} ${5:y}: ${6:Int}) (-> ${7:Int})\n  ${0:body})',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-fx-mixed',
             documentation: {
@@ -590,7 +614,7 @@ import {
             label: 'class',
             kind: CompletionItemKind.Snippet,
             detail: 'Class definition',
-            insertText: '(class ${1:ClassName}\n  ;; Class fields\n  (var ${2:fieldName})\n\n  ;; Constructor\n  (constructor (${3:params})\n    (do\n      (set! this.${2:fieldName} ${2:fieldName})))\n      \n  ;; Method\n  (fn ${4:methodName} (${5:params})\n    ${0:body}))',
+            insertText: '(class ${1:Calculator}\n  ;; Class fields\n  (var ${2:value})\n\n  ;; Constructor\n  (constructor (${3:initialValue})\n    (do\n      (set! this.${2:value} ${3:initialValue})))\n      \n  ;; Method\n  (fn ${4:calculate} (${5:input})\n    ${0:body}))',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-class',
             documentation: {
@@ -603,7 +627,7 @@ import {
             label: 'class-with-fx',
             kind: CompletionItemKind.Snippet,
             detail: 'Class with pure method',
-            insertText: '(class ${1:ClassName}\n  ;; Class fields\n  (var ${2:fieldName})\n\n  ;; Constructor\n  (constructor (${3:params})\n    (do\n      (set! this.${2:fieldName} ${2:fieldName})))\n      \n  ;; Pure method\n  (fx ${4:methodName} (${5:param}: ${6:Type}) (-> ${7:ReturnType})\n    ${0:body}))',
+            insertText: '(class ${1:Calculator}\n  ;; Class fields\n  (var ${2:value})\n\n  ;; Constructor\n  (constructor (${3:initialValue})\n    (do\n      (set! this.${2:value} ${3:initialValue})))\n      \n  ;; Pure method\n  (fx ${4:multiply} (${5:x}: ${6:Int}) (-> ${7:Int})\n    ${0:body}))',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-class-with-fx',
             documentation: {
@@ -618,7 +642,7 @@ import {
             label: 'struct',
             kind: CompletionItemKind.Snippet,
             detail: 'Struct definition',
-            insertText: '(struct ${1:StructName}\n  ;; Struct fields\n  (var ${2:fieldName})\n\n  ;; Initializer\n  (init (${3:params})\n    (do\n      (set! self.${2:fieldName} ${2:fieldName})\n      self))\n      \n  ;; Method\n  (fn ${4:methodName} (${5:params})\n    ${0:body}))',
+            insertText: '(struct ${1:Point}\n  ;; Struct fields\n  (var ${2:x})\n  (var ${3:y})\n\n  ;; Initializer\n  (init (${4:x} ${5:y})\n    (do\n      (set! self.x x)\n      (set! self.y y)\n      self))\n      \n  ;; Method\n  (fn ${6:distance} (${7:other})\n    ${0:body}))',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-struct',
             documentation: {
@@ -631,7 +655,7 @@ import {
             label: 'struct-with-fx',
             kind: CompletionItemKind.Snippet,
             detail: 'Struct with pure method',
-            insertText: '(struct ${1:StructName}\n  ;; Struct fields\n  (var ${2:fieldName})\n\n  ;; Initializer\n  (init (${3:params})\n    (do\n      (set! self.${2:fieldName} ${2:fieldName})\n      self))\n      \n  ;; Pure method\n  (fx ${4:methodName} (${5:param}: ${6:Type}) (-> ${7:ReturnType})\n    ${0:body}))',
+            insertText: '(struct ${1:Point}\n  ;; Struct fields\n  (var ${2:x})\n  (var ${3:y})\n\n  ;; Initializer\n  (init (${4:x} ${5:y})\n    (do\n      (set! self.x x)\n      (set! self.y y)\n      self))\n      \n  ;; Pure method\n  (fx ${6:distanceTo} (${7:other}: ${8:Point}) (-> ${9:Double})\n    ${0:body}))',
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: '01-struct-with-fx',
             documentation: {
@@ -879,6 +903,60 @@ import {
             documentation: {
               kind: MarkupKind.Markdown,
               value: 'Parameter with enum type annotation'
+            }
+          });
+        }
+        
+        if ('for'.startsWith(word)) {
+          completions.push({
+            label: 'for-range',
+            kind: CompletionItemKind.Snippet,
+            detail: 'For range loop',
+            insertText: '(for (${1:i} ${2:0} ${3:10})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-for',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a for loop over a numeric range'
+            }
+          });
+          
+          completions.push({
+            label: 'for-range-step',
+            kind: CompletionItemKind.Snippet,
+            detail: 'For range loop with step',
+            insertText: '(for (${1:i} ${2:0} ${3:10} ${4:2})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-for-step',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a for loop over a numeric range with custom step'
+            }
+          });
+          
+          completions.push({
+            label: 'for-in',
+            kind: CompletionItemKind.Snippet,
+            detail: 'For-in loop',
+            insertText: '(for (${1:item} in ${2:items})\n  ${0:body})',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-for-in',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a for loop that iterates through a collection'
+            }
+          });
+          
+          completions.push({
+            label: 'for-index',
+            kind: CompletionItemKind.Snippet,
+            detail: 'For loop with index',
+            insertText: '(for (${1:i} ${2:0} ${3:items.length})\n  (let (${4:item} (get ${3:items} ${1:i}))\n    ${0:body}))',
+            insertTextFormat: InsertTextFormat.Snippet,
+            sortText: '01-for-index',
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: 'Creates a for loop with index access to a collection'
             }
           });
         }
@@ -1588,23 +1666,49 @@ import {
       {
         label: 'for-range',
         kind: CompletionItemKind.Snippet,
-        detail: 'For loop with range',
-        insertText: '${1:5} ${2:10})',
+        detail: 'For range loop',
+        insertText: '(for (${1:i} ${2:0} ${3:10})\n  ${0:body})',
         insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-for',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Create a for loop from start to end (exclusive)'
+          value: 'Creates a for loop over a numeric range'
         }
       },
       {
         label: 'for-range-step',
         kind: CompletionItemKind.Snippet,
-        detail: 'For loop with range and step',
-        insertText: '${1:0} ${2:10} ${3:2})',
+        detail: 'For range loop with step',
+        insertText: '(for (${1:i} ${2:0} ${3:10} ${4:2})\n  ${0:body})',
         insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-for-step',
         documentation: {
           kind: MarkupKind.Markdown,
-          value: 'Create a for loop from start to end (exclusive) with step'
+          value: 'Creates a for loop over a numeric range with custom step'
+        }
+      },
+      {
+        label: 'for-in',
+        kind: CompletionItemKind.Snippet,
+        detail: 'For-in loop',
+        insertText: '(for (${1:item} in ${2:items})\n  ${0:body})',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-for-in',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a for loop that iterates through a collection'
+        }
+      },
+      {
+        label: 'for-index',
+        kind: CompletionItemKind.Snippet,
+        detail: 'For loop with index',
+        insertText: '(for (${1:i} ${2:0} ${3:items.length})\n  (let (${4:item} (get ${3:items} ${1:i}))\n    ${0:body}))',
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '01-for-index',
+        documentation: {
+          kind: MarkupKind.Markdown,
+          value: 'Creates a for loop with index access to a collection'
         }
       }
     ];
