@@ -10,5 +10,31 @@
     "typescript": "^5.7.3",
     "vscode-languageclient": "^9.0.1",
     "vscode-test": "^1.6.1"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "hql.balanceParentheses",
+        "title": "HQL: Balance Parentheses"
+      },
+      {
+        "command": "hql.fixParentheses",
+        "title": "HQL: Fix Unmatched Parentheses"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "editorLangId == hql",
+          "command": "hql.balanceParentheses",
+          "group": "HQL"
+        },
+        {
+          "when": "editorLangId == hql",
+          "command": "hql.fixParentheses",
+          "group": "HQL"
+        }
+      ]
+    }
   }
 }

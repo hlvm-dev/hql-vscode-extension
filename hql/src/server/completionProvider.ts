@@ -73,6 +73,8 @@ import * as fs from 'fs';
 import { parse, SExp } from '../parser';
 import { isList, isSymbol, isString } from '../s-exp/types';
 import { SymbolManager, ExtendedSymbolInformation } from './symbolManager';
+// Import centralized regex patterns
+import * as RegexPatterns from './utils/regex-patterns';
 
 /**
  * CompletionProvider handles intelligent code completion for HQL
@@ -117,7 +119,7 @@ export class CompletionProvider {
       
       // PARAMETERIZED FUNCTION CALL WITH DOT NOTATION - DYNAMIC VERSION
       // Check for any function call with parameter type and dot notation (like install os: .)
-      const functionParamDotMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/i);
+      const functionParamDotMatch = linePrefix.match(RegexPatterns.FUNCTION_PARAM_DOT_REGEX);
       if (functionParamDotMatch) {
         const [_, funcName, paramName] = functionParamDotMatch;
         console.log(`[HQL Completion] Function parameter dot notation: ${funcName} ${paramName}:`);
@@ -310,10 +312,10 @@ export class CompletionProvider {
       }
       
       // Check for enum values in function call context: (install os: |)
-      const paramWithTypeMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s*$/);
+      const paramWithTypeMatch = linePrefix.match(RegexPatterns.PARAM_WITH_TYPE_REGEX);
       if (paramWithTypeMatch) {
         // Find the function and parameter name to get type context
-        const funcParamMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
+        const funcParamMatch = linePrefix.match(RegexPatterns.FUNC_PARAM_REGEX);
         if (funcParamMatch) {
           const [_, funcName, paramName] = funcParamMatch;
           // Get completions for this typed parameter
@@ -325,14 +327,14 @@ export class CompletionProvider {
       }
       
       // Check for enum dot notation shorthand: (= .|) or (install os: .|)
-      const enumDotMatch = linePrefix.match(/\S+\s+\.$/);
+      const enumDotMatch = linePrefix.match(RegexPatterns.ENUM_DOT_REGEX);
       if (enumDotMatch) {
         // Check if it's in parameter context for an enum type
-        const paramContextMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
+        const paramContextMatch = linePrefix.match(RegexPatterns.PARAM_CONTEXT_REGEX);
         if (paramContextMatch) {
           const paramName = paramContextMatch[1];
           // Find parameter type for full context
-          const functionMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+/);
+          const functionMatch = linePrefix.match(RegexPatterns.FUNCTION_MATCH_REGEX);
           if (functionMatch) {
             const funcName = functionMatch[1];
             console.log(`[HQL Completion] Parameter context: ${funcName} ${paramName}:`);
@@ -344,7 +346,7 @@ export class CompletionProvider {
         }
         
         // Check if we're in a direct function call with dot
-        const directFunctionDotMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+\.$/);
+        const directFunctionDotMatch = linePrefix.match(RegexPatterns.DIRECT_FUNCTION_DOT_REGEX);
         if (directFunctionDotMatch) {
           const funcName = directFunctionDotMatch[1];
           
@@ -377,7 +379,7 @@ export class CompletionProvider {
       }
       
       // Check for function call context: (functionName |
-      const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s*$/);
+      const funcCallMatch = linePrefix.match(RegexPatterns.FUNC_CALL_REGEX);
       if (funcCallMatch) {
         const functionName = funcCallMatch[1];
         console.log(`[HQL Completion] Function call detected: ${functionName}`);
@@ -390,14 +392,14 @@ export class CompletionProvider {
       }
       
       // Check for class instantiation: (new |
-      const newClassMatch = linePrefix.match(/\(\s*new\s+$/);
+      const newClassMatch = linePrefix.match(RegexPatterns.NEW_CLASS_REGEX);
       if (newClassMatch) {
         console.log(`[HQL Completion] Class instantiation detected`);
         return getClassInstantiationCompletions(document, this.symbolManager);
       }
       
       // Check for class name typing to suggest instantiation (at start of line or inside parentheses)
-      const classNameMatch = linePrefix.match(/(?:^|\()[\s]*([a-zA-Z_][a-zA-Z0-9_]*)$/);
+      const classNameMatch = linePrefix.match(RegexPatterns.CLASS_NAME_REGEX);
       if (classNameMatch) {
         const word = classNameMatch[1];
         if (word && word.length > 0) {
@@ -409,11 +411,11 @@ export class CompletionProvider {
       }
       
       // Check for named parameter in function call: (functionName param: |
-      const namedParamMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*:\s*$/);
+      const namedParamMatch = linePrefix.match(RegexPatterns.NAMED_PARAM_REGEX);
       if (namedParamMatch) {
         console.log(`[HQL Completion] Named parameter context detected`);
         // Extract function and parameter name to provide type-specific completions
-        const funcParamParts = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
+        const funcParamParts = linePrefix.match(RegexPatterns.FUNC_PARAM_REGEX);
         if (funcParamParts) {
           const [_, funcName, paramName] = funcParamParts;
           console.log(`[HQL Completion] Function: ${funcName}, Parameter: ${paramName}`);
@@ -469,7 +471,7 @@ export class CompletionProvider {
       }
 
       // Check for dot chain completions (numbers.filter .map) 
-      if (linePrefix.match(/\)[.\s]*$/)) {
+      if (linePrefix.match(RegexPatterns.DOT_CHAIN_REGEX)) {
         const chainCompletions = handleDotChainCompletions(document, linePrefix);
         if (chainCompletions.length > 0) {
           return chainCompletions;
@@ -504,22 +506,22 @@ export class CompletionProvider {
       }
 
       // Check for cond pattern completions
-      if (linePrefix.match(/\(cond\s*$/)) {
+      if (linePrefix.match(RegexPatterns.COND_REGEX)) {
         return getCondPatternCompletions();
       }
 
       // Check for for-loop completions
-      if (linePrefix.match(/\(for\s*\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s*$/)) {
+      if (linePrefix.match(RegexPatterns.FOR_REGEX)) {
         return getForLoopCompletions();
       }
 
       // Check for loop/recur pattern
-      if (linePrefix.match(/\(loop\s*\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s+/)) {
+      if (linePrefix.match(RegexPatterns.LOOP_REGEX)) {
         return getLoopRecurCompletions();
       }
 
       // Check for struct/class field completions
-      if (linePrefix.match(/\((struct|class)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*$/)) {
+      if (linePrefix.match(RegexPatterns.CLASS_STRUCT_REGEX)) {
         const isStruct = linePrefix.includes('struct');
         return getClassStructFieldCompletions(isStruct);
       }
@@ -703,36 +705,36 @@ export class CompletionProvider {
       }
       
       // Add cases for the HQL control structures
-      if (linePrefix.match(/\(\s*repeat\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.REPEAT_REGEX)) {
         return getRepeatCompletions();
       }
       
-      if (linePrefix.match(/\(\s*for\s*\(\s*[a-zA-Z0-9_]*\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.FOR_DECLARATION_REGEX)) {
         return getForLoopCompletions();
       }
 
-      if (linePrefix.match(/\(\s*while\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.WHILE_REGEX)) {
         return getWhileLoopCompletions();
       }
 
-      if (linePrefix.match(/\(\s*cond\s*$/i)) {
-        return getCondCompletions();
-      }
-
-      if (linePrefix.match(/\(\s*(when|unless)\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.WHEN_UNLESS_REGEX)) {
         return getWhenUnlessCompletions();
       }
 
-      if (linePrefix.match(/\(\s*loop\s*\(\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.LOOP_DECLARATION_REGEX)) {
         return getLoopRecurCompletions();
       }
 
-      if (linePrefix.match(/\(\s*(if-let|when-let)\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.IF_WHEN_LET_REGEX)) {
         return getLetBindingControlCompletions();
       }
 
-      if (linePrefix.match(/\(\s*class\s*$/i)) {
+      if (linePrefix.match(RegexPatterns.CLASS_DECLARATION_REGEX)) {
         return getClassCompletions();
+      }
+      
+      if (linePrefix.match(RegexPatterns.COND_COMPLETION_REGEX)) {
+        return getCondCompletions();
       }
       
       // Return empty array if nothing else matched
@@ -748,7 +750,7 @@ export class CompletionProvider {
    * Extract the current word from text up to the cursor position
    */
   private getWordAtPosition(linePrefix: string): string {
-    const wordMatch = linePrefix.match(/[a-zA-Z0-9_-]*$/);
+    const wordMatch = linePrefix.match(RegexPatterns.WORD_MATCH_REGEX);
     if (wordMatch) {
       return wordMatch[0];
     }
@@ -939,12 +941,9 @@ export class CompletionProvider {
 
   // Simplify the isInImportVectorContext method to focus on what matters
   private isInImportVectorContext(linePrefix: string, currentLine: string): boolean {
-    // Direct check for import statement with bracket
-    const importWithBracket = currentLine.includes('import') && 
-                              currentLine.match(/\(\s*import\s+\[/) !== null;
-    
-    console.log(`[HQL] Import context check: "${currentLine}" -> ${importWithBracket}`);
-    return importWithBracket;
+    return linePrefix.includes('import [') ||
+      linePrefix.includes('import [') ||
+      currentLine.match(RegexPatterns.IMPORT_REGEX) !== null;
   }
 }
 

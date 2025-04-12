@@ -17,7 +17,8 @@ import {
     Location,
     DidChangeConfigurationNotification,
     TextDocumentChangeEvent,
-    TextDocumentPositionParams
+    TextDocumentPositionParams,
+    TextEdit
   } from 'vscode-languageserver/node';
   
 import {
@@ -30,6 +31,7 @@ import {
   import { DiagnosticsProvider } from './diagnosticProvider';
   import { HoverProvider } from './hoverManager';
   import { DefinitionProvider } from './definitionManager';
+  import { HqlFormatter } from './formatter/hqlFormatter';
   
   // Create a connection for the server
   const connection = createConnection(ProposedFeatures.all);
@@ -43,6 +45,7 @@ import {
   const diagnosticsProvider = new DiagnosticsProvider(symbolManager);
   const hoverProvider = new HoverProvider(symbolManager);
   const definitionProvider = new DefinitionProvider(symbolManager);
+  const formatter = new HqlFormatter();
   
   // Server capabilities initialization
   connection.onInitialize((params: InitializeParams) => {
@@ -60,6 +63,8 @@ import {
         definitionProvider: true,
         // Enable document symbol provider
         documentSymbolProvider: true,
+        // Add document formatting
+        documentFormattingProvider: true,
         // No semantic tokens for now
         semanticTokensProvider: undefined
       }
@@ -167,6 +172,29 @@ import {
   // Register definition provider
   connection.onDefinition(async (params: TextDocumentPositionParams): Promise<Location | null> => {
     return definitionProvider.provideDefinition(params);
+  });
+  
+  // Register document formatting handler
+  connection.onDocumentFormatting((params) => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) return [];
+    
+    return formatter.formatDocument(document);
+  });
+  
+  // Register the balanceParentheses command
+  connection.onRequest('hql/balanceParentheses', (params: { uri: string }) => {
+    const document = documents.get(params.uri);
+    if (!document) {
+      console.log('Document not found for URI:', params.uri);
+      return null;
+    }
+    
+    console.log('Balancing parentheses for document:', params.uri);
+    const edits = formatter.balanceParentheses(document);
+    console.log(`Found ${edits.length} edits needed for document`);
+    
+    return edits;
   });
   
   // Handle document closing

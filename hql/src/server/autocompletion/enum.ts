@@ -8,6 +8,8 @@ import {
 } from 'vscode-languageserver';
 import { isList, isSymbol, isString } from '../../s-exp/types';
 import { parse, SExp } from '../../parser';
+// Import centralized regex patterns
+import * as RegexPatterns from '../utils/regex-patterns';
 
 /**
  * Get all enum case completions from all enum types in the document
@@ -263,166 +265,184 @@ export function getAllEnumCaseCompletions(document: TextDocument, symbolManager:
 
     
   /**
-   * Handle completions for enum dot notation
+   * Handle enum dot notation completions in various contexts
    */
   export function handleEnumDotCompletions(document: TextDocument, position: Position, symbolManager: SymbolManager, dynamicValueCache: Map<string, CompletionItem[]>): CompletionItem[] {
-    const text = document.getText();
-    const lines = text.split('\n');
-    const currentLine = lines[position.line] || '';
-    const linePrefix = currentLine.substring(0, position.character);
-    
-    if (!linePrefix.endsWith('.')) return [];
-    
-    console.log(`[HQL Completion] handleEnumDotCompletions for: "${linePrefix}"`);
-    
-    const beforeDot = linePrefix.slice(0, -1).trim();
-    const symbols = symbolManager.getDocumentSymbols(document.uri);
-    
-    // DYNAMIC PARAMETER CONTEXT - no hardcoded function names or types
-    // Find any function call with a parameter and colon
-    const funcParamTypeMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+([a-zA-Z_][a-zA-Z0-9_]*):\s+\.$/);
-    if (funcParamTypeMatch) {
-      const [_, funcName, paramName] = funcParamTypeMatch;
-      console.log(`[HQL Completion] Parameter type match: ${funcName} ${paramName}:`);
+    try {
+      const text = document.getText();
+      const offset = document.offsetAt(position);
       
-      // Try direct parsing first to bypass any stale symbol manager data
-      const fnMatch = text.match(new RegExp(`\\(fn\\s+${funcName}\\s+\\(([^)]+)\\)`, 'i'));
-      if (fnMatch) {
-        const paramText = fnMatch[1];
-        console.log(`[HQL Completion] Parameter text: ${paramText}`);
+      // Get text up to the cursor position
+      const linePrefix = document.getText({
+        start: { line: position.line, character: 0 },
+        end: position
+      });
+      
+      const currentLine = document.getText({
+        start: { line: position.line, character: 0 },
+        end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
+      });
+      
+      // First, try to handle function parameter context with dot: (functionName paramName: .)
+      const funcParamTypeMatch = linePrefix.match(RegexPatterns.FUNCTION_PARAM_DOT_REGEX);
+      if (funcParamTypeMatch) {
+        const [_, funcName, paramName] = funcParamTypeMatch;
+        console.log(`[HQL Enum Completion] Function parameter dot syntax: ${funcName} ${paramName}:.`);
         
-        // Extract parameter type directly from text
-        const paramTypeMatch = paramText.match(new RegExp(`${paramName}:\\s*([A-Za-z0-9_]+)`, 'i'));
-        if (paramTypeMatch) {
-          const extractedType = paramTypeMatch[1];
-          console.log(`[HQL Completion] Direct parsed parameter type: ${extractedType}`);
+        // Try to extract parameter type directly from function definition
+        const fnMatch = text.match(new RegExp(`\\(fn\\s+${funcName}\\s+\\(([^)]+)\\)`, 'i'));
+        if (fnMatch) {
+          const paramText = fnMatch[1];
+          console.log(`[HQL Enum Completion] Parameter text: ${paramText}`);
           
-          // Check if this is an enum type
-          if (symbolManager.isEnumType(extractedType)) {
-            return getEnumValueCompletions(document, extractedType, true, symbolManager, dynamicValueCache);
+          // Look for type annotation in the parameter list
+          const paramTypeMatch = paramText.match(new RegExp(`${paramName}:\\s*([A-Za-z0-9_]+)`, 'i'));
+          if (paramTypeMatch) {
+            const extractedType = paramTypeMatch[1];
+            console.log(`[HQL Enum Completion] Extracted parameter type: ${extractedType}`);
+            
+            // Check if this is an enum type
+            if (symbolManager.isEnumType(extractedType)) {
+              return getEnumValueCompletions(document, extractedType, true, symbolManager, dynamicValueCache);
+            }
           }
         }
-      }
-      
-      // Fall back to symbol manager
-      const paramType = symbolManager.getParameterType(funcName, paramName, document.uri);
-      console.log(`[HQL Completion] Parameter type from symbol manager: ${paramType}`);
-      
-      if (paramType && symbolManager.isEnumType(paramType)) {
-        // Return enum case completions for this parameter type
-        const typedCompletions = getEnumValueCompletions(document, paramType, true, symbolManager, dynamicValueCache);
-        if (typedCompletions.length > 0) {
-          return typedCompletions;
+        
+        // If we couldn't extract from function definition, try the symbol manager
+        const paramType = symbolManager.getParameterType(funcName, paramName, document.uri);
+        if (paramType && symbolManager.isEnumType(paramType)) {
+          return getEnumValueCompletions(document, paramType, true, symbolManager, dynamicValueCache);
         }
       }
-    }
-    
-    // 2. Check for direct function call with dot: (install .)
-    const directFunctionCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+\.$/);
-    if (directFunctionCallMatch) {
-      const [_, funcName] = directFunctionCallMatch;
       
-      // Find function symbol
-      const functionSymbol = symbols.find(s => 
-        (s.kind === 12 || s.kind === 6) && // Function or Method
-        s.name === funcName
-      );
-      
-      // Check if function has parameters and the first one is an enum
-      if (functionSymbol && 
-          functionSymbol.data?.params && 
-          functionSymbol.data.params.length > 0) {
+      // Next, try to handle direct function call with dot: (functionName .)
+      const directFunctionCallMatch = linePrefix.match(RegexPatterns.DIRECT_FUNCTION_DOT_REGEX);
+      if (directFunctionCallMatch) {
+        const funcName = directFunctionCallMatch[1];
+        console.log(`[HQL Enum Completion] Direct function call with dot: ${funcName} .`);
         
-        const firstParam = functionSymbol.data.params[0];
-        if (firstParam.type && symbolManager.isEnumType(firstParam.type)) {
-          // If first parameter is an enum, show its cases
-          return getEnumValueCompletions(document, firstParam.type, true, symbolManager, dynamicValueCache);
-        }
-      }
-    }
-    
-    // 3. Check for direct enum type reference (Type.case)
-    const enumMatch = beforeDot.match(/([A-Za-z_][A-Za-z0-9_]*)$/);
-    if (enumMatch) {
-      const [_, typeName] = enumMatch;
-      
-      // Verify this is actually an enum type
-      const enumType = symbols.find(s => 
-        s.kind === 10 && // Enum
-        s.name === typeName
-      );
-      
-      if (enumType) {
-        return getEnumValueCompletions(document, typeName, true, symbolManager, dynamicValueCache);
-      }
-    }
-    
-    // 4. Check if we're in a pattern matching case for an enum
-    const matchPatternMatch = currentLine.match(/\(\s*match\s+(\w+).*\(\s*\.\s*$/);
-    if (matchPatternMatch) {
-      const [_, matchedVar] = matchPatternMatch;
-      
-      // Find the type of the matched variable
-      const varSymbol = symbols.find(s => 
-        s.kind === 13 && // Variable
-        s.name === matchedVar &&
-        s.data?.type
-      );
-      
-      if (varSymbol && symbolManager.isEnumType(varSymbol.data!.type!)) {
-        return getEnumValueCompletions(document, varSymbol.data!.type!, true, symbolManager, dynamicValueCache);
-      }
-    }
-    
-    // 5. If we're in a function parameter list, don't show unrelated enum completions
-    const inParamListMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[^)]*\.$/);
-    if (inParamListMatch) {
-      // Try to extract function name
-      const funcMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+/);
-      if (funcMatch) {
-        const funcName = funcMatch[1];
-        
-        // Find function symbol
-        const functionSymbol = symbols.find(s => 
+        // Check function's first parameter type
+        const symbols = symbolManager.getDocumentSymbols(document.uri);
+        const funcSymbol = symbols.find(s => 
           (s.kind === 12 || s.kind === 6) && // Function or Method
           s.name === funcName
         );
         
-        if (functionSymbol && 
-            functionSymbol.data?.params && 
-            functionSymbol.data.params.length > 0) {
-          
-          // If dot is used in position where enum parameter would be expected,
-          // return all enum cases that would be valid for any parameter of this function
-          const enumParams = functionSymbol.data.params
-            .filter(p => p.type && symbolManager.isEnumType(p.type));
-          
-          if (enumParams.length > 0) {
-            // Get completions for first enum parameter
-            return getEnumValueCompletions(document, enumParams[0].type!, true, symbolManager, dynamicValueCache);
+        if (funcSymbol && funcSymbol.data?.params && funcSymbol.data.params.length > 0) {
+          const firstParam = funcSymbol.data.params[0];
+          if (firstParam.type && symbolManager.isEnumType(firstParam.type)) {
+            return getEnumValueCompletions(document, firstParam.type, true, symbolManager, dynamicValueCache);
           }
         }
       }
-    }
-    
-    // 6. Try to determine expected type, but fallback to all enum cases if we can't
-    const startOfArg = linePrefix.match(/[\(,]\s*\.$/);
-    if (startOfArg) {
-      // Try to determine the expected type from context
-      const expectedType = getExpectedTypeFromContext(document, position, symbolManager);
-      if (expectedType && symbolManager.isEnumType(expectedType)) {
-        // If we found an expected enum type, only show values from that enum
-        return getEnumValueCompletions(document, expectedType, true, symbolManager, dynamicValueCache);
+      
+      // Check if we have a direct enum reference with dot
+      const dotPos = linePrefix.lastIndexOf('.');
+      if (dotPos !== -1 && dotPos === linePrefix.length - 1) {
+        // Get text before the dot
+        const beforeDot = linePrefix.substring(0, dotPos).trim();
+        
+        // Try to match enum name directly
+        const enumMatch = beforeDot.match(/([A-Za-z_][A-Za-z0-9_]*)$/);
+        if (enumMatch) {
+          const potentialEnum = enumMatch[1];
+          console.log(`[HQL Enum Completion] Potential enum reference: ${potentialEnum}`);
+          
+          // Check if this is a known enum type
+          if (symbolManager.isEnumType(potentialEnum)) {
+            return getEnumValueCompletions(document, potentialEnum, true, symbolManager, dynamicValueCache);
+          }
+        }
       }
       
-      // If we couldn't determine the type, don't show any completions
-      console.log(`[HQL Completion] Couldn't determine expected type, showing no enum cases`);
+      // Special case for match expression with dot: (match someVar (. 
+      const matchPatternMatch = currentLine.match(/\(\s*match\s+(\w+).*\(\s*\.\s*$/);
+      if (matchPatternMatch) {
+        const matchedVar = matchPatternMatch[1];
+        console.log(`[HQL Enum Completion] Match expression with dot for variable: ${matchedVar}`);
+        
+        // Try to determine the type of the matched variable
+        const expectedType = getExpectedTypeFromContext(document, position, symbolManager);
+        if (expectedType && symbolManager.isEnumType(expectedType)) {
+          return getEnumValueCompletions(document, expectedType, true, symbolManager, dynamicValueCache);
+        }
+      }
+      
+      // Try to handle dot in parameter list
+      const inParamListMatch = linePrefix.match(/\([a-zA-Z_][a-zA-Z0-9_]*\s+[^)]*\.$/);
+      if (inParamListMatch) {
+        const funcMatch = linePrefix.match(RegexPatterns.FUNCTION_MATCH_REGEX);
+        if (funcMatch) {
+          const funcName = funcMatch[1];
+          console.log(`[HQL Enum Completion] Function parameter list with dot: ${funcName}`);
+          
+          // Try to determine the expected parameter type
+          const expectedType = getExpectedTypeFromContext(document, position, symbolManager);
+          if (expectedType && symbolManager.isEnumType(expectedType)) {
+            return getEnumValueCompletions(document, expectedType, true, symbolManager, dynamicValueCache);
+          }
+        }
+      }
+      
+      // Handle dot at start of argument - more generic case that works in nested calls too
+      // e.g., (fn-call (another-fn . ))
+      const startOfArg = linePrefix.match(/[\(,]\s*\.$/);
+      if (startOfArg) {
+        console.log(`[HQL Enum Completion] Start of argument with dot`);
+        
+        // Try to determine expected type at this position
+        const expectedType = getExpectedTypeFromContext(document, position, symbolManager);
+        if (expectedType && symbolManager.isEnumType(expectedType)) {
+          return getEnumValueCompletions(document, expectedType, true, symbolManager, dynamicValueCache);
+        }
+        
+        // If no specific expected type, return all enum types - but this is discouraged
+        // Returning an empty array here is better for code quality
+        return []; 
+      }
+      
+      // Check for function call with dot after some argument text
+      // This helps when we're mid-parameter and want enum completions
+      const funcCallMatch = linePrefix.match(/\(([a-zA-Z_][a-zA-Z0-9_]*)\s+(.*?)\.$/);
+      if (funcCallMatch) {
+        const [_, funcName, argText] = funcCallMatch;
+        // Count commas to determine parameter position
+        const commaCount = (argText.match(/,/g) || []).length;
+        const paramIndex = commaCount; // 0-based index
+        
+        console.log(`[HQL Enum Completion] Function call with dot after args: ${funcName}, param index: ${paramIndex}`);
+        
+        const funcSymbol = symbolManager.getDocumentSymbols(document.uri)
+          .find(s => (s.kind === 12 || s.kind === 6) && s.name === funcName);
+        
+        if (funcSymbol && funcSymbol.data?.params && paramIndex < funcSymbol.data.params.length) {
+          const param = funcSymbol.data.params[paramIndex];
+          if (param.type && symbolManager.isEnumType(param.type)) {
+            return getEnumValueCompletions(document, param.type, true, symbolManager, dynamicValueCache);
+          }
+        }
+      }
+      
+      // Handle parameters with type annotation and dot
+      const paramWithTypeMatch = linePrefix.match(RegexPatterns.PARAM_CONTEXT_REGEX);
+      if (paramWithTypeMatch) {
+        const funcParamMatch = linePrefix.match(RegexPatterns.PARAM_CONTEXT_REGEX);
+        if (funcParamMatch) {
+          const [_, funcName, paramName] = funcParamMatch;
+          console.log(`[HQL Enum Completion] Parameter with type and dot: ${funcName} ${paramName}:.`);
+          
+          const paramType = symbolManager.getParameterType(funcName, paramName, document.uri);
+          if (paramType && symbolManager.isEnumType(paramType)) {
+            return getEnumValueCompletions(document, paramType, true, symbolManager, dynamicValueCache);
+          }
+        }
+      }
+      
+      return [];
+    } catch (error) {
+      console.error(`[HQL Enum Completion] Error in enum dot completions: ${error}`);
       return [];
     }
-    
-    // For any other dot context, don't show anything
-    // Only show enum cases when we can determine the proper context
-    return [];
   }
 
     /**

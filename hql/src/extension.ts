@@ -135,6 +135,75 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
   
+  // Register balance parentheses command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('hql.balanceParentheses', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'hql') {
+        vscode.window.showErrorMessage('No active HQL document');
+        return;
+      }
+      
+      // Call the LSP command
+      try {
+        outputChannel.appendLine('Requesting parentheses balancing...');
+        const edits = await client.sendRequest<any[]>('hql/balanceParentheses', { 
+          uri: editor.document.uri.toString() 
+        });
+        
+        if (!edits || edits.length === 0) {
+          vscode.window.showInformationMessage('Document already has balanced parentheses');
+          outputChannel.appendLine('No edits needed, parentheses already balanced');
+          return;
+        }
+        
+        outputChannel.appendLine(`Received ${edits.length} edits from server`);
+        
+        // Apply the edits
+        const workspaceEdit = new vscode.WorkspaceEdit();
+        edits.forEach((edit: any) => {
+          if (edit.newText !== undefined) {
+            if (edit.range) {
+              // This is a replace operation
+              const range = new vscode.Range(
+                new vscode.Position(edit.range.start.line, edit.range.start.character),
+                new vscode.Position(edit.range.end.line, edit.range.end.character)
+              );
+              
+              if (edit.newText === '') {
+                // This is a deletion
+                outputChannel.appendLine(`Deleting at line ${edit.range.start.line}, character ${edit.range.start.character}`);
+              } else {
+                outputChannel.appendLine(`Replacing at line ${edit.range.start.line}, character ${edit.range.start.character} with "${edit.newText}"`);
+              }
+              
+              workspaceEdit.replace(editor.document.uri, range, edit.newText);
+            } else {
+              // This is an insert operation
+              const position = new vscode.Position(edit.position.line, edit.position.character);
+              outputChannel.appendLine(`Inserting "${edit.newText}" at line ${edit.position.line}, character ${edit.position.character}`);
+              workspaceEdit.insert(editor.document.uri, position, edit.newText);
+            }
+          }
+        });
+        
+        await vscode.workspace.applyEdit(workspaceEdit);
+        vscode.window.showInformationMessage(`Balanced parentheses in document (${edits.length} fixes)`);
+      } catch (error) {
+        outputChannel.appendLine(`Error balancing parentheses: ${error}`);
+        vscode.window.showErrorMessage(`Failed to balance parentheses: ${error}`);
+      }
+    })
+  );
+  
+  // Register fix parentheses command (alias for balance parentheses)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('hql.fixParentheses', async () => {
+      // Reuse the same functionality as balanceParentheses
+      await vscode.commands.executeCommand('hql.balanceParentheses');
+    })
+  );
+  
   // Register format command manually as a fallback
   context.subscriptions.push(
     vscode.commands.registerCommand('hql.formatDocument', () => {
