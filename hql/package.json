@@ -19,18 +19,7 @@
     "repl",
     "language-server"
   ],
-  "activationEvents": [
-    "onLanguage:hql",
-    "onCommand:hql.evaluateExpression",
-    "onCommand:hql.evaluateOutermostExpression",
-    "onCommand:hql.cancelEvaluations",
-    "onCommand:hql.extractVariable",
-    "onCommand:hql.fixParentheses",
-    "onCommand:hql.formatDocument",
-    "onCommand:hql.startREPLServer",
-    "onCommand:hql.stopREPLServer",
-    "onCommand:hql.restartREPLServer"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
