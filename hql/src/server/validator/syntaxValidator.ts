@@ -120,6 +120,7 @@ export class SyntaxValidator {
   
   /**
    * Validate parameter types in pure functions
+   * Fixed to properly handle typed parameters
    */
   private validateParameterTypes(
     document: TextDocument,
@@ -127,31 +128,98 @@ export class SyntaxValidator {
     diagnostics: Diagnostic[]
   ): void {
     const params = paramList.elements;
-    for (let i = 0; i < params.length; i++) {
+    let i = 0;
+    
+    // First check if we're using the inline parameter syntax with colons
+    let hasInlineTypeAnnotations = false;
+    for (let j = 0; j < params.length; j++) {
+      const param = params[j];
+      if (isSymbol(param) && (param as SSymbol).name.includes(':')) {
+        hasInlineTypeAnnotations = true;
+        break;
+      }
+    }
+    
+    // If we have inline type annotations, don't show warnings
+    if (hasInlineTypeAnnotations) {
+      return;
+    }
+    
+    while (i < params.length) {
       const param = params[i];
+      
       // Skip rest parameters and their bindings
       if (isSymbol(param) && (param as SSymbol).name === '&') {
-        i++; // Skip the next parameter
+        i += 2; // Skip '&' and the parameter name
         continue;
       }
       
-      // Check if parameter has a type annotation
-      if (isSymbol(param) && i + 2 < params.length && 
-          isSymbol(params[i+1]) && (params[i+1] as SSymbol).name === ':') {
-        // It has a type, which is good
-        i += 2; // Skip the colon and type
-      } else if (isSymbol(param)) {
-        // Parameter has no type annotation
-        this.addDiagnostic(
-          document,
-          param,
-          `Parameter '${(param as SSymbol).name}' in pure function should have a type annotation`,
-          DiagnosticSeverity.Warning,
-          diagnostics
-        );
+      // Handle proper typed parameters like (name: Type)
+      if (isSymbol(param)) {
+        const paramName = (param as SSymbol).name;
+        
+        // Check if this is a named parameter with a type
+        if (i + 2 < params.length && 
+            isSymbol(params[i+1]) && 
+            (params[i+1] as SSymbol).name === ':') {
+            
+          // It's properly typed, no warning needed
+          i += 3; // Skip parameter name, colon, and type
+          
+          // Check for default value
+          if (i < params.length && 
+              isSymbol(params[i]) && 
+              (params[i] as SSymbol).name === '=') {
+              i += 2; // Skip '=' and the default value
+          }
+        } 
+        else {
+          // Untyped parameter in fx function
+          this.addDiagnostic(
+            document,
+            param,
+            `Parameter '${paramName}' in pure function should have a type annotation`,
+            DiagnosticSeverity.Warning,
+            diagnostics
+          );
+          i++;
+          
+          // Skip default value if present
+          if (i < params.length && 
+              isSymbol(params[i]) && 
+              (params[i] as SSymbol).name === '=') {
+              i += 2; // Skip '=' and the default value
+          }
+        }
+      } 
+      else if (isList(param)) {
+        // Handle parameters defined as a list like (name: Type)
+        if (param.elements.length >= 3 && 
+            isSymbol(param.elements[0]) && 
+            isSymbol(param.elements[1]) && 
+            (param.elements[1] as SSymbol).name === ':' && 
+            isSymbol(param.elements[2])) {
+          // This is already properly typed
+          i++;
+        } else {
+          // Malformed parameter
+          this.addDiagnostic(
+            document,
+            param,
+            `Malformed parameter in function declaration`,
+            DiagnosticSeverity.Error,
+            diagnostics
+          );
+          i++;
+        }
+      } else {
+        // Not a symbol or list
+        i++;
       }
     }
   }
+  
+  // All other methods remain the same
   
   /**
    * Validate a class or struct declaration
