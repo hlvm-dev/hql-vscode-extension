@@ -450,7 +450,7 @@
     "lint": "eslint src --ext ts",
     "test": "npm run compile && vscode-test-cli",
     "test:unit": "mocha -r ts-node/register 'src/test/unit/**/*.test.ts'",
-    "debug": "npm run clean && npm run compile && code --extensionDevelopmentPath=${PWD}"
+    "debug": "npm run clean && npm run compile && code --extensionDevelopmentPath=${PWD} --new-window --disable-extension=*.hql"
   },
   "devDependencies": {
     "@types/vscode": "^1.97.0",

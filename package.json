@@ -35,6 +35,21 @@
           "group": "HQL"
         }
       ]
-    }
+    },
+    "languages": [
+      {
+        "id": "hql",
+        "aliases": ["HQL", "Higher Quick Language"],
+        "extensions": [".hql"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "hql",
+        "scopeName": "source.hql",
+        "path": "./syntaxes/hql.tmLanguage.json"
+      }
+    ]
   }
 }
